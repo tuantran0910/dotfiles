@@ -113,6 +113,25 @@ describe("loadConfig", () => {
     writeUser({ mode: "sometimes" });
     expect(loadConfig(agentDir, cwd).config.mode).toBe("enforce");
   });
+
+  for (const settings of [
+    { backend: "jev" },
+    { backend: "opencode-jev", model: "@current" },
+    { backend: "opencode-jev", model: "jev-latest" },
+    { minAllowProbability: -0.1 },
+    { minAllowProbability: 1.1 },
+    { fallbackModel: "" },
+    { fallbackModel: "   " },
+  ]) {
+    it(`fails closed on invalid classifier configuration ${JSON.stringify(settings)}`, () => {
+      writeUser({ mode: "observe", classifier: { enabled: true, ...settings } });
+      const { config, warnings } = loadConfig(agentDir, cwd);
+      expect(warnings.length).toBeGreaterThan(0);
+      expect(config.mode).toBe("enforce");
+      expect(config.defaultAction).toBe("deny");
+      expect(config.classifier.enabled).toBe(false);
+    });
+  }
 });
 
 describe("default rule set", () => {
@@ -140,5 +159,6 @@ describe("the tracked policy file", () => {
       "stop-herdr-server",
     ]);
     expect(config.mode).toBe("enforce");
+    expect(config.classifier).toMatchObject({ backend: "opencode-jev", model: "jev-1.13-free", fallbackModel: "@current", minAllowProbability: 0.95, onError: "deny" });
   });
 });

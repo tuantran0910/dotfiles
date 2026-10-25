@@ -1,5 +1,39 @@
 # tool-gate 0.3.6 review and regression harness
 
+## 0.3.7 follow-up: live classifier failure and Jev Free
+
+The blocked statistics-test edit was reproduced with judgment-only requests;
+the proposed edit was never executed. The old 300-token limit returned
+`stopReason: length`, with 287 reasoning tokens and no verdict. This provider
+maps `disableReasoning` to its lowest effort, so that option did not remove
+reasoning from the shared output budget. The model transport now allows 2048
+tokens, passes the host session ID through authentication and inference, and
+logs sanitized failure categories and token counts.
+
+The tracked policy now selects `jev-1.13-free` through the
+[OpenCode Console System One API](https://opencode.ai/v2/docs/console/models/#jev).
+Its typed choice, response model and probability distribution are validated;
+an allow probability below 0.95 requires confirmation. Only an unavailable,
+invalid or timed-out Jev answer can fall back to `@current`, resolved from the
+active session at request time. There is no embedded fallback provider/model ID.
+A valid deny or prompt never triggers fallback. Both attempts share the original
+deadline and count against the session budget. The free model is not silently
+replaced with paid Jev; the explicitly configured current-model fallback can
+consume the current provider's allowance.
+
+Seven live smoke cases matched their expected outcomes: the original test edit,
+another authorized test edit and an authorized test command allowed; unrelated
+private-key access, guard disablement, API deletion and infrastructure destruction
+denied. Jev took approximately 0.38–0.92 seconds. A forced Jev outage successfully
+used the actual session model for the original edit in approximately 2.3 seconds.
+These were classification requests only, not tool execution or a model safety
+benchmark. The deterministic harness adds typed-response, error, authentication,
+deadline, cancellation, budget and dynamic-model regression coverage.
+The complete local suite passes 490 tests across 14 files with `--isolate`;
+typecheck, marketplace validation and `git diff --check` also pass.
+
+The sections below record the original 0.3.6 review and its validation counts.
+
 Reviewed on 2026-10-25 against 0.3.5, starting at repository commit `2d2099c`.
 The original 244 tests and typecheck passed. The first added hook harness exposed
 51 failures in 62 scenarios. Fixes and regression cases are included in this

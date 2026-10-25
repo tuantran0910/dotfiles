@@ -387,10 +387,12 @@ export const DEFAULT_RULES: Rule[] = [
 
 export const DEFAULT_CLASSIFIER: ClassifierConfig = {
   enabled: false,
+  backend: "model",
   model: "@smol",
   timeoutMs: 15000,
   maxPerSession: 200,
   onError: "deny",
+  minAllowProbability: 0.95,
 };
 
 interface RawConfig {
@@ -563,10 +565,13 @@ export function loadConfig(agentDir: string, cwd: string): LoadedConfig {
       const record = rawClassifier as Record<string, unknown>;
       const valid: Record<string, (value: unknown) => boolean> = {
         enabled: value => typeof value === "boolean",
+        backend: value => value === "model" || value === "opencode-jev",
         model: value => typeof value === "string" && value.trim() !== "",
         timeoutMs: value => typeof value === "number" && Number.isFinite(value) && value >= 500 && value <= 120000,
         maxPerSession: value => typeof value === "number" && Number.isSafeInteger(value) && value >= 0,
         onError: value => value === "allow" || value === "deny",
+        minAllowProbability: value => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1,
+        fallbackModel: value => typeof value === "string" && value.trim() !== "",
       };
       for (const [key, value] of Object.entries(record)) {
         if (!Object.hasOwn(valid, key) || !valid[key]!(value)) {
@@ -575,13 +580,20 @@ export function loadConfig(agentDir: string, cwd: string): LoadedConfig {
         }
       }
       if (typeof record["enabled"] === "boolean") classifier.enabled = record["enabled"];
+      if (record["backend"] === "model" || record["backend"] === "opencode-jev") classifier.backend = record["backend"];
       if (typeof record["model"] === "string" && record["model"] !== "") classifier.model = record["model"];
       if (typeof record["timeoutMs"] === "number" && Number.isFinite(record["timeoutMs"]) && record["timeoutMs"] >= 500 && record["timeoutMs"] <= 120000) classifier.timeoutMs = record["timeoutMs"];
       if (typeof record["maxPerSession"] === "number" && Number.isSafeInteger(record["maxPerSession"]) && record["maxPerSession"] >= 0) {
         classifier.maxPerSession = record["maxPerSession"];
       }
       if (record["onError"] === "allow" || record["onError"] === "deny") classifier.onError = record["onError"];
+      if (typeof record["minAllowProbability"] === "number" && valid["minAllowProbability"]!(record["minAllowProbability"])) classifier.minAllowProbability = record["minAllowProbability"];
+      if (typeof record["fallbackModel"] === "string" && record["fallbackModel"].trim() !== "") classifier.fallbackModel = record["fallbackModel"];
     }
+  }
+  if (classifier.backend === "opencode-jev" && !/^jev-\d+\.\d+(?:\.\d+)?(?:-free)?$/.test(classifier.model)) {
+    warnings.push(`${userPath}: opencode-jev requires a versioned Jev model id`);
+    brokenConfig = true;
   }
 
   // Reserve built-in ids first so repository rules cannot borrow a trusted

@@ -7,9 +7,11 @@ import { gateHarness } from "./harness.ts";
  * production credentials, model calls, proposed shell commands, or tools run. */
 it("round-trips the forced verdict through the real subprocess and pi-ai", async () => {
   let request: any;
+  let requestSession: string | null = null;
   const server = Bun.serve({
     hostname: "127.0.0.1", port: 0,
     async fetch(req) {
+      requestSession = req.headers.get("x-opencode-session");
       request = await req.json();
       const chunk = (delta: unknown, finish_reason: string | null = null) => `data: ${JSON.stringify({ id: "test-completion", object: "chat.completion.chunk", created: 1, model: "test-judge", choices: [{ index: 0, delta, finish_reason }] })}\n\n`;
       return new Response(
@@ -19,9 +21,9 @@ it("round-trips the forced verdict through the real subprocess and pi-ai", async
     },
   });
   const payload = {
-    model: { id: "test-judge", name: "test-judge", api: "openai-completions", provider: "openai", baseUrl: `${server.url}v1`, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 512 },
+    model: { id: "test-judge", name: "test-judge", api: "openai-completions", provider: "opencode-go", baseUrl: `${server.url}v1`, reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 32000, maxTokens: 512 },
     context: { systemPrompt: ["Synthetic test judge"], messages: [{ role: "user", content: "Synthetic pending call", timestamp: 1 }], tools: [VERDICT_TOOL] },
-    options: { apiKey: "synthetic-test-key", maxTokens: 128, toolChoice: { type: "tool", name: "verdict" }, disableReasoning: true },
+    options: { apiKey: "synthetic-test-key", sessionId: "synthetic-host-session", maxTokens: 128, toolChoice: { type: "tool", name: "verdict" }, disableReasoning: true },
   };
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5000);
@@ -30,6 +32,7 @@ it("round-trips the forced verdict through the real subprocess and pi-ai", async
     expect(parseVerdict(result)).toEqual({ action: "deny", reason: "synthetic integration verdict" });
     expect(request.tool_choice).toEqual({ type: "function", function: { name: "verdict" } });
     expect(request.tools[0].function.name).toBe("verdict");
+    expect(requestSession as string | null).toBe("synthetic-host-session");
   } finally {
     clearTimeout(timer);
     server.stop(true);

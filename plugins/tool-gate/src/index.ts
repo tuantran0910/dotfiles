@@ -18,7 +18,8 @@ import { homedir } from "node:os";
 
 import { appendAudit, auditPath } from "./audit.ts";
 import { isReadOnlyCommand, needsClassification, readOnlyPaths } from "./classify-input.ts";
-import { buildClassifierPrompt, createClassifier, recentInstructions, type ClassifyFn } from "./classifier.ts";
+import { buildClassifierPrompt, recentInstructions, type ClassifyFn } from "./classifier.ts";
+import { createGuardClassifier } from "./classifier-router.ts";
 import { loadConfig } from "./config.ts";
 import { evaluate } from "./decide.ts";
 import { canonicalTarget, extractPaths, resolveTarget } from "./match.ts";
@@ -122,7 +123,7 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
 
       const lines = [
         `tool-gate: ${loaded.config.mode} — ${loaded.config.rules.length} rules, default ${loaded.config.defaultAction}`,
-        `classifier: ${loaded.config.classifier.enabled ? `on (${loaded.config.classifier.model}, ${classifierCalls}/${loaded.config.classifier.maxPerSession} calls, ${verdicts.size} cached)` : "off"}`,
+        `classifier: ${loaded.config.classifier.enabled ? `on (${loaded.config.classifier.backend ?? "model"}/${loaded.config.classifier.model}${loaded.config.classifier.fallbackModel ? `, fallback ${loaded.config.classifier.fallbackModel}` : ""}, ${classifierCalls}/${loaded.config.classifier.maxPerSession} calls, ${verdicts.size} cached)` : "off"}`,
         `config: ${loaded.sources.length > 0 ? loaded.sources.join(", ") : "defaults only"}`,
         `audit: ${auditPath(agentDir)}`,
       ];
@@ -157,7 +158,8 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
     let classifierKey: string | undefined;
     if (evaluated.source === "default" && classifier.enabled && needsClassification(event.toolName, input)) {
       const context = [...(intent.length > 0 ? intent : recentInstructions(ctx.sessionManager))];
-      const key = JSON.stringify([event.toolName, input, ctx.cwd, home, resolvedPaths, context]);
+      const activeModel = classifier.model === "@current" || classifier.fallbackModel === "@current" ? ctx.models?.current?.() : undefined;
+      const key = JSON.stringify([event.toolName, input, ctx.cwd, home, resolvedPaths, context, activeModel?.provider, activeModel?.id, activeModel?.baseUrl]);
       classifierKey = key;
       let verdict = verdicts.get(key);
       if (verdict === undefined) {
@@ -171,7 +173,14 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
           verdict = { action: classifier.onError, reason: "classifier budget exhausted for this session" };
         } else {
           classifierCalls += 1;
-          const classify = options.classify ?? createClassifier(pi, ctx, classifier);
+          const classify = options.classify ?? createGuardClassifier(pi, ctx, classifier, {
+            reserveFallback: () => {
+              if (callGeneration !== generation) return false;
+              if (classifierCalls >= classifier.maxPerSession) return false;
+              classifierCalls++;
+              return true;
+            },
+          });
           const controller = new AbortController();
           let timer: ReturnType<typeof setTimeout> | undefined;
           const request = Promise.race([

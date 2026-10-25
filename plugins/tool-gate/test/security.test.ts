@@ -115,6 +115,16 @@ describe("protected path aliases and multi-file edits", () => {
 });
 
 describe("verdict cache isolation", () => {
+  it("rejudges when the dynamically selected fallback model changes", async () => {
+    let selected = { provider: "synthetic-provider", id: "first" };
+    let calls = 0;
+    const h = gateHarness({ config: { classifier: { ...classifierPolicy.classifier, fallbackModel: "@current" } }, classify: async () => ({ action: ++calls === 1 ? "allow" : "deny" }) });
+    h.ctx.models = { current: () => selected };
+    expect(await h.bash("touch output")).toBeUndefined();
+    selected = { ...selected, id: "second" };
+    expect((await h.bash("touch output"))?.block).toBe(true);
+    expect(calls).toBe(2);
+  });
   it("does not reuse a hash collision (Aa and B@ collide in the old djb2 key)", async () => {
     let calls = 0;
     const h = gateHarness({ config: classifierPolicy, classify: async call => { calls++; return { action: call.input["command"] === "touch Aa" ? "allow" : "deny" }; } });

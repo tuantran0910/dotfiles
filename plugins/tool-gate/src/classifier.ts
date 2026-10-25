@@ -13,6 +13,7 @@
 
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 
 import type { CallContext, ClassifierConfig } from "./types.ts";
@@ -27,7 +28,9 @@ type CompleteSimple = (model: unknown, context: unknown, options?: unknown) => P
 
 /** Options completeSimple accepts; typed loosely because it is an internal subpath. */
 const CALL_OPTIONS = {
-  maxTokens: 300,
+  // Some providers map disableReasoning to their lowest effort rather than
+  // non-thinking mode. That reasoning shares the output budget with the verdict.
+  maxTokens: 2048,
   disableReasoning: true,
   toolChoice: { type: "tool", name: VERDICT_TOOL.name },
 };
@@ -193,9 +196,10 @@ export async function classifyInSubprocess(
   }
 }
 
-interface ClassifierContext {
+export interface ClassifierContext {
   models: { resolve(spec: string): unknown; current(): unknown };
-  modelRegistry: { getApiKey(model: unknown): Promise<string | undefined> };
+  modelRegistry: { getApiKey(model: unknown, sessionId?: string, options?: { signal: AbortSignal }): Promise<string | undefined> };
+  sessionManager?: { getSessionId?(): string };
 }
 
 /** Injectable transport boundary for deterministic timeout/error tests. */
@@ -206,6 +210,17 @@ export interface ClassifierRuntime {
 
 /** Builds a classifier bound to the live session context. */
 export function createClassifier(pi: ExtensionAPI, ctx: ClassifierContext, config: ClassifierConfig, runtime: ClassifierRuntime = { loadComplete: loadCompleteSimple, subprocess: classifyInSubprocess }): ClassifyFn {
+  const fallbackSession = randomUUID();
+  const checkedVerdict = (message: unknown): Verdict | null => {
+    const verdict = parseVerdict(message);
+    if (verdict !== null) return verdict;
+    const response = message as { stopReason?: unknown; usage?: { output?: unknown; reasoningTokens?: unknown } } | null;
+    const stop = response?.stopReason;
+    const category = stop === "length" ? "output limit reached" : stop === "error" ? "provider error" : stop === "aborted" ? "request cancelled" : "invalid verdict schema";
+    const count = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : "unknown";
+    pi.logger.warn(`tool-gate: no classifier verdict: ${category} (output=${count(response?.usage?.output)}, reasoning=${count(response?.usage?.reasoningTokens)})`);
+    return null;
+  };
   return async (call, intent, parentSignal) => {
     const controller = new AbortController();
     const cancel = () => controller.abort();
@@ -218,13 +233,16 @@ export function createClassifier(pi: ExtensionAPI, ctx: ClassifierContext, confi
       timer = setTimeout(() => { controller.abort(); resolve(null); }, config.timeoutMs);
     });
     const run = async (): Promise<Verdict | null> => {
-      const model = ctx.models.resolve(config.model);
+      // Only an explicit @current selector follows the session model. An
+      // unresolved ordinary alias still fails closed rather than switching models.
+      const model = config.model === "@current" ? ctx.models.current() : ctx.models.resolve(config.model);
       if (model === undefined || model === null) {
         pi.logger.warn(`tool-gate: classifier model "${config.model}" did not resolve`);
         return null;
       }
 
-      const apiKey = await ctx.modelRegistry.getApiKey(model);
+      const sessionId = ctx.sessionManager?.getSessionId?.() || fallbackSession;
+      const apiKey = await ctx.modelRegistry.getApiKey(model, sessionId, { signal: controller.signal });
       if (controller.signal.aborted) return null;
       const { system, user } = buildClassifierPrompt(call, intent);
       const context = {
@@ -232,7 +250,7 @@ export function createClassifier(pi: ExtensionAPI, ctx: ClassifierContext, confi
         messages: [{ role: "user", content: user, timestamp: Date.now() }],
         tools: [VERDICT_TOOL],
       };
-      const options = { ...CALL_OPTIONS, apiKey, tools: [VERDICT_TOOL] };
+      const options = { ...CALL_OPTIONS, apiKey, sessionId, tools: [VERDICT_TOOL] };
       const pluginDir = `${import.meta.dir}/..`;
       const debug = process.env["TOOL_GATE_DEBUG"] === "1";
 
@@ -241,7 +259,7 @@ export function createClassifier(pi: ExtensionAPI, ctx: ClassifierContext, confi
       if (complete !== null) {
         try {
           const message = await complete(model, context, { ...options, signal: controller.signal });
-          return parseVerdict(message);
+          return checkedVerdict(message);
         } catch {
           pi.logger.warn("tool-gate: in-process classifier failed; trying subprocess");
         }
@@ -251,7 +269,7 @@ export function createClassifier(pi: ExtensionAPI, ctx: ClassifierContext, confi
       try {
         const message = await runtime.subprocess({ model, context, options }, controller.signal, pluginDir);
         if (debug) pi.logger.info(`tool-gate: subprocess classifier answered ${message === null ? "nothing" : "a message"}`);
-        return parseVerdict(message);
+        return checkedVerdict(message);
       } catch {
         pi.logger.warn("tool-gate: subprocess classifier failed");
         return null;

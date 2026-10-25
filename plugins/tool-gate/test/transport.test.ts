@@ -17,6 +17,50 @@ function transport(overrides: Partial<ClassifierRuntime> = {}, contextOverrides:
 }
 
 describe("classifier transport contract", () => {
+  for (const subprocess of [false, true]) {
+    it(`leaves room for reasoning before the verdict (${subprocess ? "subprocess" : "in-process"})`, async () => {
+      const respond = (options: any) => options.maxTokens < 900
+        ? { stopReason: "length", usage: { output: options.maxTokens, reasoningTokens: options.maxTokens }, content: [{ type: "thinking", thinking: "synthetic reasoning" }] }
+        : answer();
+      const { classify } = transport({
+        loadComplete: async () => subprocess ? null : async (_m, _c, options) => respond(options),
+        subprocess: async (payload: any) => respond(payload.options),
+      });
+      expect((await classify(call, []))?.action).toBe("allow");
+    });
+    it(`forwards the host session to auth and inference (${subprocess ? "subprocess" : "in-process"})`, async () => {
+      let options: any;
+      let authSession: string | undefined;
+      const { classify } = transport({
+        loadComplete: async () => subprocess ? null : async (_m, _c, opts) => { options = opts; return answer(); },
+        subprocess: async (payload: any) => { options = payload.options; return answer(); },
+      }, {
+        sessionManager: { getSessionId: () => "synthetic-host-session" },
+        modelRegistry: { getApiKey: async (_m: unknown, sessionId: string) => { authSession = sessionId; return "synthetic-test-key"; } },
+      });
+      await classify(call, []);
+      expect(options.sessionId).toBe("synthetic-host-session");
+      expect(authSession).toBe("synthetic-host-session");
+    });
+  }
+  it("keeps a stable fallback session when the host has no session manager", async () => {
+    const sessions: string[] = [];
+    const { classify } = transport({ loadComplete: async () => async (_m, _c, options: any) => { sessions.push(options.sessionId); return answer(); } });
+    await classify(call, []);
+    await classify(call, []);
+    expect(typeof sessions[0]).toBe("string");
+    expect(sessions[0]!.length).toBeGreaterThan(0);
+    expect(sessions[1]).toBe(sessions[0]);
+  });
+  it("diagnoses reasoning exhaustion without logging response content", async () => {
+    const { classify, warnings } = transport({ loadComplete: async () => async () => ({
+      stopReason: "length", usage: { output: 300, reasoningTokens: 287 },
+      content: [{ type: "thinking", thinking: "synthetic-sensitive-content" }],
+    }) });
+    expect(await classify(call, [])).toBeNull();
+    expect(warnings.join(" ")).toContain("output limit reached (output=300, reasoning=287)");
+    expect(warnings.join(" ")).not.toContain("synthetic-sensitive-content");
+  });
   it("loads the installed pi-ai completion function without making a model request", async () => {
     expect(typeof await loadCompleteSimple()).toBe("function");
   });

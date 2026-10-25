@@ -22,13 +22,19 @@ export interface Rule {
 /** Optional model-in-the-loop escalation for calls no rule matched. */
 export interface ClassifierConfig {
   enabled: boolean;
-  /** Model spec or role alias resolved through `ctx.models`. */
+  /** Model uses pi-ai; opencode-jev uses Console's typed System One API. */
+  backend?: "model" | "opencode-jev";
+  /** Model spec/role alias for the model backend, or versioned Jev API model id. */
   model: string;
   timeoutMs: number;
   /** Hard cap on classifier calls per session. */
   maxPerSession: number;
   /** What to do when the classifier is unavailable, errors, times out, or answers garbage. */
   onError: "allow" | "deny";
+  /** Jev allow probabilities below this threshold require confirmation. */
+  minAllowProbability?: number;
+  /** Optional model fallback for an unavailable Jev backend; @current follows the session model. */
+  fallbackModel?: string;
 }
 
 export interface GateConfig {

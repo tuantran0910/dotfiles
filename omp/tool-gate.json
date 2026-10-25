@@ -30,7 +30,10 @@
   ],
   "classifier": {
     "enabled": true,
-    "model": "@smol",
+    "backend": "opencode-jev",
+    "model": "jev-1.13-free",
+    "fallbackModel": "@current",
+    "minAllowProbability": 0.95,
     "timeoutMs": 15000,
     "maxPerSession": 200,
     "onError": "deny"

@@ -39,19 +39,51 @@ executed"), which breaks automation without protecting it.
 3. **Classifier** (optional) — only calls that matched no rule. It sees the complete arguments, canonical file targets, working directory, and the user's last two instructions. Tool results are excluded directly; hostile text can still reach it through proposed arguments.
 4. **Default action** — `allow` unless configured otherwise.
 
-The classifier runs in a child `bun` process (in-process resolution of `pi-ai`
-fails for marketplace plugins), so budget ~0.2 s of startup plus one small model
-call. Measured here: 4 s was too short for a cold GLM call, hence the 15 s default.
+The tracked policy uses **Jev Free through OpenCode Console**, with the session's
+current coding model as an operational fallback. Jev uses a direct typed HTTP
+request; it does not generate a text verdict or start a Bun child process.
 
-A classifier answer is `allow`, `deny` or `prompt`, supplied by one schema-valid
-`verdict` tool call with a reason. Free-text JSON, conflicting verdicts, and aborted
-or errored completions are rejected. No answer (timeout, provider error,
+The optional `model` backend uses pi-ai and can run in a child Bun process when
+marketplace resolution prevents in-process loading. Its 2048-token output budget
+leaves room for providers whose "disable reasoning" option actually maps to low
+reasoning effort. Both inference and credential lookup receive the host session ID.
+
+A classifier answer is `allow`, `deny` or `prompt`. Jev supplies a typed Choice with
+validated probabilities; the model backend supplies one schema-valid `verdict`
+tool call with a reason. Free-text JSON, conflicting verdicts, and aborted
+or errored model completions are rejected. No answer (timeout, provider error,
 unparseable response, budget exhausted) becomes `onError` — **deny by default**, the same
 fail-closed choice Claude Code documents.
 
 ```json
-"classifier": { "enabled": true, "model": "@smol", "timeoutMs": 15000, "maxPerSession": 200, "onError": "deny" }
+"classifier": {
+  "enabled": true,
+  "backend": "opencode-jev",
+  "model": "jev-1.13-free",
+  "fallbackModel": "@current",
+  "minAllowProbability": 0.95,
+  "timeoutMs": 15000,
+  "maxPerSession": 200,
+  "onError": "deny"
+}
 ```
+
+Jev uses the [OpenCode Console System One endpoint](https://opencode.ai/v2/docs/console/models/#jev)
+and your existing OpenCode Console/Go credential. It is separate from the Go chat
+subscription endpoint; no TypeSafe account is needed. The configured model is the
+limited-time free version, and the adapter does not substitute a paid Jev model.
+
+An `allow` probability below 0.95 becomes `prompt`. This is a conservative routing
+threshold, not a measured safety guarantee. A valid Jev denial or prompt is never
+sent to the fallback to seek a more permissive answer. API errors, invalid responses
+and timeouts can use `fallbackModel`; `@current` resolves the active session model
+at the moment of fallback, without embedding a provider/model id in the guard.
+The fallback may consume the current provider's paid/subscription allowance.
+
+Jev gets up to three seconds (or half a shorter total timeout) when a fallback is
+configured. The fallback gets the remaining overall deadline. Each provider attempt
+counts against `maxPerSession`, including a fallback. With `onError: deny`, failure
+of both backends blocks the tool. Omitting `fallbackModel` disables failover.
 
 Classifier settings are user-only: a repository cannot enable, disable or soften it.
 Verdicts are keyed by the complete call, cwd, canonical file targets and user
@@ -60,8 +92,8 @@ are not cached. Reloads, cwd changes and session switches invalidate the cache;
 pending decisions are rejected after policy, session or intent changes.
 `/tool-gate` shows calls used, cache size and model.
 
-One deadline covers model/key resolution, loading, completion and subprocess
-fallback. An unresolved judge alias fails closed instead of using the main model.
+One deadline covers the complete classification pipeline. An unresolved ordinary
+judge alias fails closed; the session model is used only by an explicit `@current`.
 Arguments or user context over 16,000 characters each require manual review;
 the gate never sends a silently clipped call to the judge.
 
@@ -197,7 +229,7 @@ In `observe` mode the record carries `"wouldBe":"deny"`.
 ## Install note
 
 `omp plugin install` copies the plugin but does not install its dependencies. The
-classifier needs one:
+model backend (including fallback) needs one:
 
 ```sh
 cd ~/.omp/plugins/cache/plugins/tuantran0910-dotfiles___tool-gate___<version>
@@ -205,8 +237,12 @@ bun install --production
 ```
 
 `bootstrap.sh --omp` does this automatically for flat and nested cached plugins
-that declare dependencies, including repairing incomplete installs. Without it the classifier cannot load, and `onError: deny` blocks
-every unmatched non-read-only call — fail-closed, but not useful.
+that declare dependencies, including repairing incomplete installs. Without it the
+model backend cannot load. Jev's direct HTTP adapter still works, but an unavailable
+Jev request then has no usable model fallback and `onError: deny` blocks the call.
+
+After upgrading the cached plugin, use `/restart` in an existing omp session to
+load the new code and resume that session. `/tool-gate reload` reloads policy only.
 
 Measured before 0.3.6 on this machine: 0.22 s to start the child process, ~7 s end-to-end for a
 cold GLM classifier call, ~0 s for a cached verdict. Only calls that match no rule
