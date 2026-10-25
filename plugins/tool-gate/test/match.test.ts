@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { extractPaths, globToRegExp, matchesAnyPath, matchesTool, resolveTarget } from "../src/match.ts";
 
@@ -56,12 +59,30 @@ describe("extractPaths", () => {
 });
 
 describe("matchesAnyPath", () => {
-  it("returns the resolved path that matched", () => {
-    expect(matchesAnyPath(["**/.env"], [".env"], "/repo", "/home/me")).toBe("/repo/.env");
-    expect(matchesAnyPath(["~/.ssh/**"], ["~/.ssh/id_rsa"], "/repo", "/home/me")).toBe("/home/me/.ssh/id_rsa");
+  function fixture() {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "gate-match-")));
+    const home = join(root, "home");
+    const cwd = join(root, "repo");
+    mkdirSync(home);
+    mkdirSync(cwd);
+    return { root, home, cwd };
+  }
+
+  it("returns the canonical path that matched", () => {
+    const { home, cwd } = fixture();
+    expect(matchesAnyPath(["**/.env"], [".env"], cwd, home)).toBe(join(cwd, ".env"));
+    expect(matchesAnyPath(["~/.ssh/**"], ["~/.ssh/id_rsa"], cwd, home)).toBe(join(home, ".ssh/id_rsa"));
+  });
+
+  it("returns the canonical target below a symlinked home even when the file does not exist", () => {
+    const { root, home, cwd } = fixture();
+    const alias = join(root, "home-alias");
+    symlinkSync(home, alias);
+    expect(matchesAnyPath(["~/.ssh/**"], ["~/.ssh/id_rsa"], cwd, alias)).toBe(join(home, ".ssh/id_rsa"));
   });
 
   it("does not match unrelated paths", () => {
-    expect(matchesAnyPath(["~/.ssh/**"], ["/repo/.ssh-notes.md"], "/repo", "/home/me")).toBeNull();
+    const { home, cwd } = fixture();
+    expect(matchesAnyPath(["~/.ssh/**"], [".ssh-notes.md"], cwd, home)).toBeNull();
   });
 });
