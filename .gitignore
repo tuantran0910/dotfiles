@@ -1,0 +1,25 @@
+# secrets and machine-local overrides never leave this machine
+secrets/*
+!secrets/.gitkeep
+*.local
+*.env
+!**/.env.example
+
+# credentials / state that must not be published
+auth.json
+.credentials.json
+agent.db
+*.sock
+*.log
+.DS_Store
+
+# dependency trees and our own lockfiles: installed at bootstrap time, never committed
+node_modules/
+/plugins/*/bun.lock
+/plugins/*/bun.lockb
+/plugins/*/package-lock.json
+/package-lock.json
+
+# backups
+.dotfiles-backup/
+*.bak

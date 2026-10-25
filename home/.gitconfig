@@ -1,0 +1,18 @@
+[user]
+	name = tuantran0910
+	email = tntuan0910@gmail.com
+	signingkey = ACBC63ACB35DC89F
+[push]
+	autoSetupRemote = true
+[credential "https://github.com"]
+	helper = 
+	helper = !/opt/homebrew/bin/gh auth git-credential
+[credential "https://gist.github.com"]
+	helper = 
+	helper = !/opt/homebrew/bin/gh auth git-credential
+[commit]
+	gpgsign = true
+[tag]
+	gpgSign = true
+[core]
+	editor = cursor --wait

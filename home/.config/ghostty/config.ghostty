@@ -1,0 +1,74 @@
+# Ghostty configuration
+# Migrated from ~/.config/alacritty/alacritty.toml
+
+# ------------------------------
+# Font
+# ------------------------------
+font-family = "JetBrainsMono Nerd Font Mono"
+font-size = 16
+# Alacritty inherits macOS font smoothing (heavier strokes); Ghostty defaults
+# thinner. Enable stem darkening to match. Tune 0-255 (default 255 = thickest).
+font-thicken = true
+# font-thicken-strength = 255
+
+# ------------------------------
+# Colors (custom Alacritty palette)
+# ------------------------------
+background = #101421
+foreground = #fffbf6
+
+palette = 0=#2e2e2e
+palette = 1=#eb4129
+palette = 2=#abe047
+palette = 3=#f6c744
+palette = 4=#47a0f3
+palette = 5=#7b5cb0
+palette = 6=#64dbed
+palette = 7=#e5e9f0
+palette = 8=#565656
+palette = 9=#ec5357
+palette = 10=#c0e17d
+palette = 11=#f9da6a
+palette = 12=#49a4f8
+palette = 13=#a47de9
+palette = 14=#99faf2
+palette = 15=#ffffff
+
+# ------------------------------
+# Cursor
+# ------------------------------
+# Alacritty used a steady block cursor. Ghostty's shell integration otherwise
+# forces a *bar* at the prompt and blinks by default, so we disable both.
+shell-integration-features = no-cursor
+cursor-style = block
+cursor-style-blink = false
+
+# ------------------------------
+# Window
+# ------------------------------
+background-opacity = 0.9
+# background-blur = 20   # optional: native macOS blur behind the translucent background
+window-padding-x = 15
+window-padding-y = 15
+window-width = 160
+window-height = 45
+window-decoration = auto
+
+# ------------------------------
+# Scrolling
+# ------------------------------
+# Alacritty used a scroll multiplier of 3; discrete wheel steps scroll 3 lines.
+mouse-scroll-multiplier = precision:1,discrete:3
+
+# ------------------------------
+# Selection
+# ------------------------------
+copy-on-select = true
+
+# ------------------------------
+# Keybindings
+# ------------------------------
+# Shift+Enter opens a new window (was Alacritty's SpawnNewInstance).
+# Note: this captures Shift+Enter globally, which some TUIs use for input.
+# Remove this line if an app (e.g. an editor or AI CLI) needs Shift+Enter.
+keybind = shift+enter=new_window

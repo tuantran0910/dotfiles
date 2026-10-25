@@ -1,0 +1,68 @@
+model = "gpt-6.1-sol"
+model_reasoning_effort = "medium"
+
+# Sandbox: workspace-write with outbound network enabled by default.
+# Codex defaults to NO network inside the sandbox, which breaks cargo/npm/git/API calls.
+sandbox_mode = "workspace-write"
+
+[tui]
+screen_reader_detection_done = true
+
+[tui.model_availability_nux]
+"gpt-6.1-sol" = 4
+
+[projects."/Users/tranngoctuan0910/Workspaces/PersonalRepo/risingwave-thealtoclef"]
+trust_level = "trusted"
+
+[projects."/Users/tranngoctuan0910/Workspaces/PersonalRepo/doris-altoclef"]
+trust_level = "trusted"
+
+[projects."/Users/tranngoctuan0910/Workspaces/OpenSources/iceberg-rust"]
+trust_level = "trusted"
+
+[projects."/Users/tranngoctuan0910/Workspaces/PersonalRepo/bergsmith"]
+trust_level = "trusted"
+
+[features]
+hooks = true
+
+[hooks.state]
+
+[hooks.state."/Users/tranngoctuan0910/.codex/hooks.json:session_start:0:0"]
+trusted_hash = "sha256:2012f9a4d3780162e8027009f9d7588a45f2155bc2f8085c27807b3a8f43e1d5"
+
+[hooks.state."/Users/tranngoctuan0910/.codex/hooks.json:pre_tool_use:0:0"]
+trusted_hash = "sha256:be6c6fcb2978ea348dd05101efed0afcf00efcbfb5d7e78949108142c875a77d"
+
+[hooks.state."anfra@anfra-skills:hooks/hooks.json:post_tool_use:0:0"]
+trusted_hash = "sha256:c2f7d6b767a2ea7321cd3a522fa5bd84b72c5918b5813c0371ffa52892a8b09d"
+
+[hooks.state."anfra@anfra-skills:hooks/hooks.json:session_start:0:0"]
+trusted_hash = "sha256:eba45be413fc5453806d432de350d24b2704050487f67df9a6b14335a96e9028"
+
+[marketplaces.anfra-skills]
+source_type = "git"
+source = "https://github.com/holistics/anfra-skills.git"
+
+[plugins."anfra@anfra-skills"]
+enabled = true
+
+[sandbox_workspace_write]
+# Allow outbound network from sandboxed commands (writes stay limited to cwd + writable_roots).
+network_access = true
+
+[mcp_servers.playwright]
+command = "npx"
+args = ["-y", "@playwright/mcp@0.0.83", "--browser", "chrome"]
+
+[mcp_servers.playwright.tools.browser_run_code_unsafe]
+approval_mode = "approve"
+
+[mcp_servers.playwright.tools.browser_resize]
+approval_mode = "approve"
+
+[mcp_servers.playwright.tools.browser_emulate_media]
+approval_mode = "approve"
+
+[mcp_servers.playwright.tools.browser_tabs]
+approval_mode = "approve"

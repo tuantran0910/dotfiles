@@ -1,0 +1,28 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "tuantran0910-dotfiles",
+  "owner": {
+    "name": "tuantran0910"
+  },
+  "metadata": {
+    "description": "Personal omp plugins, maintained alongside my dotfiles",
+    "version": "0.1.0",
+    "pluginRoot": "plugins"
+  },
+  "plugins": [
+    {
+      "name": "pr-wording-review",
+      "description": "Interrupts PR title or description writes that read as machine-generated, so the agent reviews its own wording before the PR exists.",
+      "source": "./pr-wording-review",
+      "category": "productivity",
+      "homepage": "https://github.com/tuantran0910/dotfiles/tree/main/plugins/pr-wording-review"
+    },
+    {
+      "name": "worktree-kit",
+      "description": "One worktree tool the agent cannot misuse: placement is owned by the plugin, and direct git worktree commands get flagged.",
+      "source": "./worktree-kit",
+      "category": "development",
+      "homepage": "https://github.com/tuantran0910/dotfiles/tree/main/plugins/worktree-kit"
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    name: marketplace catalog
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: validate catalog
+        run: bun scripts/validate-marketplace.ts
+
+  plugins:
+    name: plugin checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: install, typecheck and test every plugin that declares them
+        run: |
+          set -euo pipefail
+          found=0
+          for dir in plugins/*/; do
+            [ -f "${dir}package.json" ] || continue
+            grep -q '"test"' "${dir}package.json" || continue
+            found=1
+            echo "::group::${dir}"
+            ( cd "$dir" && bun install && bun run typecheck && bun test --isolate )
+            echo "::endgroup::"
+          done
+          [ "$found" -eq 1 ] || echo "no plugin declares a test script"
+      - name: ensure plugin lockfiles are not committed
+        run: |
+          # vendored skill assets may ship their own lockfile; our plugins may not
+          if git ls-files | grep -E '^(bun\.lock|package-lock\.json)$|^plugins/[^/]+/(bun\.lock|package-lock\.json)$'; then
+            echo "::error::a plugin lockfile is committed; dependencies are installed at bootstrap time by design"
+            exit 1
+          fi
