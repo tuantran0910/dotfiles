@@ -39,12 +39,16 @@ executed"), which breaks automation without protecting it.
 3. **Classifier** (optional) — only calls that matched no rule. It sees the tool, the arguments, the working directory, and the user's last two instructions. It never sees tool results, so a hostile file cannot address it.
 4. **Default action** — `allow` unless configured otherwise.
 
+The classifier runs in a child `bun` process (in-process resolution of `pi-ai`
+fails for marketplace plugins), so budget ~0.2 s of startup plus one small model
+call. Measured here: 4 s was too short for a cold GLM call, hence the 15 s default.
+
 A classifier answer is `allow`, `deny` or `prompt`; no answer (timeout, provider error,
 unparseable text, budget exhausted) becomes `onError` — **deny by default**, the same
 fail-closed choice Claude Code documents.
 
 ```json
-"classifier": { "enabled": true, "model": "@smol", "timeoutMs": 4000, "maxPerSession": 200, "onError": "deny" }
+"classifier": { "enabled": true, "model": "@smol", "timeoutMs": 15000, "maxPerSession": 200, "onError": "deny" }
 ```
 
 Classifier settings are user-only: a repository cannot enable, disable or soften it.

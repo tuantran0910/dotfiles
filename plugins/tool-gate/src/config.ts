@@ -389,7 +389,7 @@ export const DEFAULT_RULES: Rule[] = [
 export const DEFAULT_CLASSIFIER: ClassifierConfig = {
   enabled: false,
   model: "@smol",
-  timeoutMs: 4000,
+  timeoutMs: 15000,
   maxPerSession: 200,
   onError: "deny",
 };
