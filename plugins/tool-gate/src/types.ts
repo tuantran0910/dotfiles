@@ -13,6 +13,8 @@ export interface Rule {
   command?: string;
   /** Glob patterns tested against file targets (read/write/edit). */
   paths?: string[];
+  /** Path exceptions, only when every spelling of the target is excluded. */
+  excludePaths?: string[];
   /** Shown to the model when the rule denies, and to the user when it prompts. */
   reason: string;
 }
@@ -52,4 +54,6 @@ export interface CallContext {
   input: Record<string, unknown>;
   cwd: string;
   home: string;
+  /** Canonical file-tool targets, also supplied to the judge and its cache key. */
+  resolvedPaths?: string[];
 }

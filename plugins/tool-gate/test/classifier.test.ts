@@ -14,14 +14,14 @@ describe("parseVerdict", () => {
     expect(parseVerdict(message)).toEqual({ action: "deny", reason: "touches production" });
   });
 
-  it("accepts allow without a reason", () => {
+  it("rejects allow without the required reason", () => {
     const message = { content: [{ type: "toolCall", name: "verdict", arguments: { decision: "allow" } }] };
-    expect(parseVerdict(message)).toEqual({ action: "allow" });
+    expect(parseVerdict(message)).toBeNull();
   });
 
-  it("falls back to JSON in text", () => {
+  it("does not accept free-text JSON as consent", () => {
     const message = { content: [{ type: "text", text: 'Verdict: {"verdict":"prompt","reason":"needs a human"}' }] };
-    expect(parseVerdict(message)).toEqual({ action: "prompt", reason: "needs a human" });
+    expect(parseVerdict(message)).toBeNull();
   });
 
   it("returns null for anything that is not a verdict", () => {
@@ -58,11 +58,11 @@ describe("buildClassifierPrompt", () => {
     expect(buildClassifierPrompt(call, []).user).toContain("no explicit user instruction");
   });
 
-  it("clips very large arguments while keeping the head", () => {
+  it("keeps the full call rather than hiding its tail", () => {
     const huge = { command: `echo ${"a".repeat(5000)}` };
     const { user } = buildClassifierPrompt({ ...call, input: huge }, []);
-    expect(user).toContain("chars elided");
-    expect(user.length).toBeLessThan(3000);
+    expect(user).toContain(huge.command);
+    expect(user).not.toContain("chars elided");
   });
 });
 

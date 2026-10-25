@@ -135,17 +135,7 @@ if [ "$OMP" -eq 1 ]; then
     if [ "$DRY_RUN" -eq 1 ]; then
       echo "    would run: bun install --production for every cached plugin with dependencies"
     else
-      for dir in "$HOME"/.omp/plugins/cache/plugins/*/*/; do
-        [ -f "$dir/package.json" ] || continue
-        if python3 -c "import json,sys;sys.exit(0 if json.load(open('$dir/package.json')).get('dependencies') else 1)" 2>/dev/null; then
-          if [ ! -d "$dir/node_modules" ]; then
-            echo "  install   $(basename "$dir")"
-            (cd "$dir" && bun install --production >/dev/null 2>&1) || echo "  FAILED    $(basename "$dir")"
-          else
-            echo "  ok        $(basename "$dir")"
-          fi
-        fi
-      done
+      bash "$DOTFILES/scripts/install-omp-plugin-deps.sh" "$HOME/.omp/plugins/cache/plugins" || echo "  FAILED    some plugin dependencies could not be installed"
     fi
   else
     echo "  skip      omp not installed (brew install can1357/tap/omp)"

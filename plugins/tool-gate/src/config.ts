@@ -1,10 +1,8 @@
 /**
  * Config loading and the shipped default policy.
  *
- * Precedence: project `.omp/tool-gate.json` rules, then user
- * `<agent dir>/tool-gate.json` rules, then the built-in defaults. Within that
- * list the first matching rule wins, so a project can override a default by
- * adding a rule above it.
+ * Deny before prompt before allow. Within an action, project, user, then
+ * defaults determines which matching rule supplies the explanation.
  *
  * Default action is `allow`: the guard is a blocklist for genuinely dangerous
  * operations, not a gate on ordinary work. A blocklist that defaults to deny
@@ -54,7 +52,7 @@ export const DEFAULT_RULES: Rule[] = [
     id: "git-clean-force",
     action: "deny",
     tool: "bash",
-    command: String.raw`\bgit\s+clean\s+(?:-[A-Za-z]*f[A-Za-z]*\s*)+`,
+    command: String.raw`\bgit\s+clean\s+(?![^\n;&|]*(?:--dry-run\b|-[A-Za-z]*n[A-Za-z]*(?=\s|$)))(?:-[A-Za-z]*f[A-Za-z]*\s*)+`,
     reason: "git clean deletes untracked files permanently; list them with `git clean -nd` first",
   },
   {
@@ -189,14 +187,14 @@ export const DEFAULT_RULES: Rule[] = [
     id: "db-migration-force",
     action: "deny",
     tool: "bash",
-    command: String.raw`\b(?:drizzle-kit\s+push\s+--force|prisma\s+(?:migrate\s+reset|db\s+push\s+--force-reset)|rails\s+db:(?:drop|reset)|alembic\s+downgrade\s+base|knex\s+migrate:rollback\s+--all|flyway\s+clean)\b`,
+    command: String.raw`\b(?:drizzle-kit\s+push\b[^\n;&|]*--force|prisma\s+(?:migrate\s+reset|db\s+push\b[^\n;&|]*--force-reset)|rails\s+db:(?:drop|reset)|alembic\s+downgrade\s+base|knex\s+migrate:rollback\s+--all|flyway\s+clean)\b`,
     reason: "resets or drops schema and data without a backup step",
   },
   {
     id: "destroy-remote-api",
     action: "prompt",
     tool: "bash",
-    command: String.raw`\b(?:curl|http|gh\s+api)\b[^\n]*(?:-X|--request|\s-X)\s*["']?DELETE\b`,
+    command: String.raw`\b(?:curl|http|gh\s+api)\b[^\n]*(?:-X|--request)(?:\s*|=)["']?DELETE\b`,
     reason: "a destructive API call can remove remote infrastructure and its backups",
   },
   {
@@ -218,7 +216,7 @@ export const DEFAULT_RULES: Rule[] = [
     id: "self-approve-or-merge-pr",
     action: "deny",
     tool: "bash",
-    command: String.raw`\bgh\s+pr\s+(?:merge|review\s+[^\n]*--approve)\b`,
+    command: String.raw`\bgh(?:\s+(?:--repo(?:=|\s+)|-R\s*|--hostname(?:=|\s+))\S+)*\s+pr\s+(?:merge\b|review\b[^\n]*(?:--approve\b|\s-[A-Za-z]*a[A-Za-z]*(?=\s|$)))`,
     reason: "an agent must not approve or merge its own pull request",
   },
   {
@@ -354,7 +352,8 @@ export const DEFAULT_RULES: Rule[] = [
   {
     id: "secret-paths",
     action: "deny",
-    tool: "read|write|edit",
+    tool: "read|write|edit|grep|glob|ls|find|search",
+    excludePaths: ["**/.env.example", "**/.env.sample", "**/.env.template"],
     paths: [
       "~/.ssh/**",
       "~/.aws/**",
@@ -382,7 +381,7 @@ export const DEFAULT_RULES: Rule[] = [
       "~/.omp/agent/tool-gate.log",
       "~/.config/opencode/opencode.json",
     ],
-    reason: "the agent would be changing its own permissions; edit the dotfiles repo instead",
+    reason: "changing live permissions requires confirmation, including their symlinked source files",
   },
 ];
 
@@ -409,13 +408,15 @@ export interface LoadedConfig {
   warnings: string[];
 }
 
-function readJson(path: string): RawConfig | null {
+function readJson(path: string, warnings: string[]): RawConfig | null {
   if (!existsSync(path)) return null;
   try {
     const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as RawConfig;
+    warnings.push(`${path}: config must be an object; unmatched calls will be denied`);
     return null;
   } catch {
+    warnings.push(`${path}: cannot read or parse config; unmatched calls will be denied`);
     return null;
   }
 }
@@ -458,12 +459,23 @@ function validateRules(value: unknown, origin: string, warnings: string[]): Rule
       warnings.push(`${origin}: rule ${id} has invalid paths`);
       continue;
     }
+    const excludePaths = candidate["excludePaths"];
+    if (excludePaths !== undefined && (!Array.isArray(excludePaths) || !excludePaths.every(entry => typeof entry === "string" && entry !== ""))) {
+      warnings.push(`${origin}: rule ${id} has invalid excludePaths`);
+      continue;
+    }
+    if ((paths !== undefined && (paths as string[]).length === 0) ||
+        (candidate["tool"] !== undefined && (typeof candidate["tool"] !== "string" || !(candidate["tool"] as string).trim()))) {
+      warnings.push(`${origin}: rule ${id} has an empty path list or invalid tool`);
+      continue;
+    }
     rules.push({
       id,
       action: action as Action,
       tool: typeof candidate["tool"] === "string" ? (candidate["tool"] as string) : undefined,
       command: command as string | undefined,
       paths: paths as string[] | undefined,
+      excludePaths: excludePaths as string[] | undefined,
       reason,
     });
   }
@@ -482,8 +494,25 @@ export function loadConfig(agentDir: string, cwd: string): LoadedConfig {
 
   const projectPath = join(cwd, ".omp", "tool-gate.json");
   const userPath = join(agentDir, "tool-gate.json");
-  const project = readJson(projectPath);
-  const user = readJson(userPath);
+  const project = readJson(projectPath, warnings);
+  const user = readJson(userPath, warnings);
+  let brokenConfig = warnings.length > 0;
+  if (user) {
+    const validSettings: Record<string, (value: unknown) => boolean> = {
+      mode: value => MODES.includes(value as Mode),
+      defaultAction: value => ACTIONS.includes(value as Action),
+      log: value => typeof value === "boolean",
+      replaceDefaults: value => typeof value === "boolean",
+      rules: value => Array.isArray(value),
+      classifier: () => true, // validated below
+    };
+    for (const [key, value] of Object.entries(user)) {
+      if (!Object.hasOwn(validSettings, key) || !validSettings[key]!(value)) {
+        warnings.push(`${userPath}: invalid or unknown setting ${key}`);
+        brokenConfig = true;
+      }
+    }
+  }
   if (project) sources.push(projectPath);
   if (user) sources.push(userPath);
 
@@ -496,7 +525,9 @@ export function loadConfig(agentDir: string, cwd: string): LoadedConfig {
     }
     return true;
   });
+  const beforeUserRules = warnings.length;
   const userRules = validateRules(user?.rules, userPath, warnings);
+  if (warnings.length > beforeUserRules) brokenConfig = true;
   const replaceDefaults = user?.replaceDefaults === true;
   if (project?.replaceDefaults === true) {
     warnings.push(`${projectPath}: replaceDefaults is user-only and was ignored`);
@@ -508,7 +539,8 @@ export function loadConfig(agentDir: string, cwd: string): LoadedConfig {
     return "enforce";
   })();
 
-  const defaultAction = ((): Action => {
+  let defaultAction = ((): Action => {
+    if (brokenConfig) return "deny";
     const candidate = user?.defaultAction;
     if (typeof candidate === "string" && ACTIONS.includes(candidate as Action)) return candidate as Action;
     return "allow";
@@ -526,25 +558,54 @@ export function loadConfig(agentDir: string, cwd: string): LoadedConfig {
   if (rawClassifier !== undefined) {
     if (typeof rawClassifier !== "object" || rawClassifier === null || Array.isArray(rawClassifier)) {
       warnings.push(`${userPath}: classifier must be an object`);
+      brokenConfig = true;
     } else {
       const record = rawClassifier as Record<string, unknown>;
+      const valid: Record<string, (value: unknown) => boolean> = {
+        enabled: value => typeof value === "boolean",
+        model: value => typeof value === "string" && value.trim() !== "",
+        timeoutMs: value => typeof value === "number" && Number.isFinite(value) && value >= 500 && value <= 120000,
+        maxPerSession: value => typeof value === "number" && Number.isSafeInteger(value) && value >= 0,
+        onError: value => value === "allow" || value === "deny",
+      };
+      for (const [key, value] of Object.entries(record)) {
+        if (!Object.hasOwn(valid, key) || !valid[key]!(value)) {
+          warnings.push(`${userPath}: invalid classifier setting ${key}`);
+          brokenConfig = true;
+        }
+      }
       if (typeof record["enabled"] === "boolean") classifier.enabled = record["enabled"];
       if (typeof record["model"] === "string" && record["model"] !== "") classifier.model = record["model"];
-      if (typeof record["timeoutMs"] === "number" && record["timeoutMs"] >= 500) classifier.timeoutMs = record["timeoutMs"];
-      if (typeof record["maxPerSession"] === "number" && record["maxPerSession"] >= 0) {
+      if (typeof record["timeoutMs"] === "number" && Number.isFinite(record["timeoutMs"]) && record["timeoutMs"] >= 500 && record["timeoutMs"] <= 120000) classifier.timeoutMs = record["timeoutMs"];
+      if (typeof record["maxPerSession"] === "number" && Number.isSafeInteger(record["maxPerSession"]) && record["maxPerSession"] >= 0) {
         classifier.maxPerSession = record["maxPerSession"];
       }
       if (record["onError"] === "allow" || record["onError"] === "deny") classifier.onError = record["onError"];
     }
   }
 
+  // Reserve built-in ids first so repository rules cannot borrow a trusted
+  // rule's session grant. Custom rules also have unique ids across both files.
+  const ids = new Set(replaceDefaults ? [] : DEFAULT_RULES.map(rule => rule.id));
+  const unique = (rules: Rule[], origin: string) => rules.filter(rule => {
+    if (ids.has(rule.id)) {
+      warnings.push(`${origin}: duplicate rule id ${rule.id} ignored`);
+      return false;
+    }
+    ids.add(rule.id);
+    return true;
+  });
+  const uniqueUser = unique(userRules, userPath);
+  const uniqueProject = unique(projectRules, projectPath);
+  if (brokenConfig) defaultAction = "deny";
+
   return {
     config: {
-      mode,
+      mode: brokenConfig ? "enforce" : mode,
       defaultAction,
       log,
-      rules: [...projectRules, ...userRules, ...(replaceDefaults ? [] : DEFAULT_RULES)],
-      classifier,
+      rules: [...uniqueProject, ...uniqueUser, ...(replaceDefaults ? [] : DEFAULT_RULES)],
+      classifier: brokenConfig ? { ...classifier, enabled: false } : classifier,
     },
     sources,
     warnings,

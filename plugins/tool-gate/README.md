@@ -34,17 +34,19 @@ executed"), which breaks automation without protecting it.
 
 ## Decision order
 
-1. **Rules** — first match wins (project → user → defaults).
-2. **Read-only fast path** — `read`/`grep`/`glob`, and shell commands like `ls`, `git status`, `rg`, `cat` skip the classifier.
-3. **Classifier** (optional) — only calls that matched no rule. It sees the tool, the arguments, the working directory, and the user's last two instructions. It never sees tool results, so a hostile file cannot address it.
+1. **Rules** — deny → prompt → allow. Project → user → defaults breaks ties within an action. A prompt or session grant cannot mask another rule's denial.
+2. **Read-only fast path** — `read`/`grep`/`glob`, and literal shell reads like `ls`, `git status`, `rg`, `cat` skip the classifier. Literal shell operands also pass through file path policy. Interpreters, package runners, newlines, expansion, executable hooks, and mutating flags require classification.
+3. **Classifier** (optional) — only calls that matched no rule. It sees the complete arguments, canonical file targets, working directory, and the user's last two instructions. Tool results are excluded directly; hostile text can still reach it through proposed arguments.
 4. **Default action** — `allow` unless configured otherwise.
 
 The classifier runs in a child `bun` process (in-process resolution of `pi-ai`
 fails for marketplace plugins), so budget ~0.2 s of startup plus one small model
 call. Measured here: 4 s was too short for a cold GLM call, hence the 15 s default.
 
-A classifier answer is `allow`, `deny` or `prompt`; no answer (timeout, provider error,
-unparseable text, budget exhausted) becomes `onError` — **deny by default**, the same
+A classifier answer is `allow`, `deny` or `prompt`, supplied by one schema-valid
+`verdict` tool call with a reason. Free-text JSON, conflicting verdicts, and aborted
+or errored completions are rejected. No answer (timeout, provider error,
+unparseable response, budget exhausted) becomes `onError` — **deny by default**, the same
 fail-closed choice Claude Code documents.
 
 ```json
@@ -52,8 +54,16 @@ fail-closed choice Claude Code documents.
 ```
 
 Classifier settings are user-only: a repository cannot enable, disable or soften it.
-Verdicts are cached per identical call for the session, and `/tool-gate` shows
-calls used, cache size and model.
+Verdicts are keyed by the complete call, cwd, canonical file targets and user
+intent. Concurrent identical calls share one judge request. Transient failures
+are not cached. Reloads, cwd changes and session switches invalidate the cache;
+pending decisions are rejected after policy, session or intent changes.
+`/tool-gate` shows calls used, cache size and model.
+
+One deadline covers model/key resolution, loading, completion and subprocess
+fallback. An unresolved judge alias fails closed instead of using the main model.
+Arguments or user context over 16,000 characters each require manual review;
+the gate never sends a silently clipped call to the judge.
 
 ## Modes
 
@@ -65,11 +75,13 @@ calls used, cache size and model.
 
 Switch at runtime with `/tool-gate mode observe`. `/tool-gate` prints status,
 `/tool-gate allow <rule-id>` grants one rule for the session, `/tool-gate reload`
-re-reads config.
+re-reads config and clears cached verdicts and session grants. Cwd changes do the
+same. A session switch also resets intent, the call budget and the runtime mode.
+Classifier session approval covers the exact call and context shown in the prompt.
 
 ## Configuration
 
-Files, highest precedence first — first matching rule wins:
+Files, in tie-breaking order (deny still outranks prompt and allow):
 
 1. `<project>/.omp/tool-gate.json` — **may only tighten**
 2. `<agent dir>/tool-gate.json` (this machine: `~/.omp/agent/tool-gate.json`, tracked in dotfiles)
@@ -106,13 +118,17 @@ Claude Code's "a deny rule can't be loosened by a more permissive project file".
 }
 ```
 
-Rule fields: `id` (unique), `action` (`allow`/`deny`/`prompt`), `tool` (glob, `|`
+Rule fields: `id` (unique across all sources), `action` (`allow`/`deny`/`prompt`), `tool` (glob, `|`
 alternation, default `*`), `command` (regex, bash only), `paths` (globs matched
-against resolved absolute paths; `~` expands), `reason` (shown to the model on
+against resolved absolute paths; `~` expands), optional `excludePaths` (every alias
+must match an exception), `reason` (shown to the model on
 deny, to the user on prompt).
 
-Invalid rules are dropped with a warning; a malformed file is ignored. Protection
-never disappears because of a typo.
+Invalid rules and duplicate ids are dropped with warnings. An unreadable or
+malformed existing file, invalid user rule, or invalid user/classifier setting
+forces enforce mode and denies unmatched calls until corrected. Missing config
+files still use the built-in defaults. User allow rules no longer override denies;
+change the denying rule or explicitly replace defaults in trusted user config.
 
 ## Shipped rules
 
@@ -139,7 +155,10 @@ never disappears because of a typo.
 
 ## Audit
 
-`<agent dir>/tool-gate.log`, one JSON line per decision, rotated at 2 MB:
+`<agent dir>/tool-gate.log`, one JSON line per final permission decision, rotated at
+2 MB. Approval/denial, tool-call id and cwd are recorded after prompting. Logs use
+0600 permissions and refuse symlink targets. Common credential-bearing command
+details are redacted; this is a heuristic, not a guarantee that logs contain no secrets.
 
 ```json
 {"ts":"2026-10-25T08:00:00.000Z","tool":"bash","decision":"deny","ruleId":"rm-root","detail":"rm -rf /"}
@@ -152,16 +171,26 @@ In `observe` mode the record carries `"wouldBe":"deny"`.
 - **Regex, not a shell parser.** `r''m -rf /`, `$(echo cm0gLXJm /)`, or a script
   file invoked by name can evade a command pattern. This raises the cost of an
   accident; it is not a sandbox.
-- **Path rules only see file tools.** `bash` writing through `>` is covered by a
-  few explicit rules (`/etc`), not by the path globs.
+- **Path rules see file tools and literal fast-path shell operands.** Arbitrary
+  scripts and shell writes through `>` still rely on regex rules or the classifier.
+  Implicit recursive reads such as `rg pattern .` can expose protected descendants;
+  the path check covers the named target, not every file a subprocess may open.
 - **Prompts need a UI.** Without one, a `prompt` rule becomes a denial with an
   explanation — deliberate, since guessing is worse.
-- **No model in the loop.** Deterministic by design: no judge to bribe, no latency
-  on every call, no false confidence.
+- **The optional judge is fallible.** Rules are deterministic; classifier verdicts
+  depend on model behavior. Withholding tool results reduces one injection channel,
+  but does not remove prompt injection through tool arguments or script contents.
 - **Session grants are memory-only.** A restart forgets them.
-- **Symlinks are followed** for path rules (a workspace symlink to
+- **Symlinks are followed** for path rules, including existing parents of new
+  files and symlinked literal policy targets (a workspace symlink to
   `~/.ssh/id_rsa` is still denied), including `~` resolved through
   `/var` → `/private/var` on macOS.
+- **No filesystem or process isolation.** Concurrent path replacement, hard links,
+  shell aliases/functions, Git hooks and hostile executables remain outside this
+  guard's guarantees. Cached approval does not re-inspect changed script contents.
+- **Custom regexes run synchronously.** A pathological project expression can
+  stall the host. Project policy and other host extensions must be trusted;
+  isolate regex execution or use a linear-time engine before accepting hostile policy.
 - **Policy tampering is prompted**, not silently allowed: rewriting
   `tool-gate.json`/`.log` through bash hits `gate-tamper`.
 
@@ -175,11 +204,11 @@ cd ~/.omp/plugins/cache/plugins/tuantran0910-dotfiles___tool-gate___<version>
 bun install --production
 ```
 
-`bootstrap.sh --omp` does this automatically for any cached plugin that declares
-dependencies. Without it the classifier cannot load, and `onError: deny` blocks
+`bootstrap.sh --omp` does this automatically for flat and nested cached plugins
+that declare dependencies, including repairing incomplete installs. Without it the classifier cannot load, and `onError: deny` blocks
 every unmatched non-read-only call — fail-closed, but not useful.
 
-Measured on this machine: 0.22 s to start the child process, ~7 s end-to-end for a
+Measured before 0.3.6 on this machine: 0.22 s to start the child process, ~7 s end-to-end for a
 cold GLM classifier call, ~0 s for a cached verdict. Only calls that match no rule
 pay it.
 
@@ -188,7 +217,8 @@ pay it.
 ```sh
 bun install
 bun run typecheck
-bun test --isolate     # 241 tests, including a 131-case adversarial corpus
+bun test --isolate
+bun test --isolate --coverage
 ```
 
 ## How this compares to Claude Code's auto mode
@@ -205,12 +235,15 @@ the action is denied.
 | | Claude auto mode | tool-gate |
 | --- | --- | --- |
 | Decision maker | classifier model (Sonnet 5 by default) | rules, then an optional `@smol` classifier for leftovers |
-| Latency/cost | a model round-trip per judged call | microseconds |
-| Novel situations | can reason about intent | miss unless a rule exists |
-| Determinism | same input, may differ by model/version | same input, same answer |
-| Injection resistance | tool results stripped; reviewed separately | no model to persuade |
+| Latency/cost | a model round-trip per judged call | fast rules; model round-trip for unmatched calls |
+| Novel situations | can reason about intent | optional judge reasons about intent |
+| Determinism | same input, may differ by model/version | rules deterministic; judge verdicts may vary |
+| Injection resistance | tool results stripped; reviewed separately | tool results excluded directly; arguments remain an injection surface |
 | Loosening by project file | deny rules always win | project files can only tighten |
 | Audit | transcript | JSONL, one line per decision |
 
 They compose: use omp's mode for per-tool prompting, then this plugin for
 argument-level rules that stay identical across models and sessions.
+
+The harness, review findings, compatibility changes and remaining risks are
+documented in [REVIEW.md](REVIEW.md). CI runs the plugin tests on Linux and macOS.

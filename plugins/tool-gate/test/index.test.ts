@@ -265,10 +265,11 @@ describe("classifier escalation", () => {
   });
 
   it("obeys a prompt verdict through the UI", async () => {
-    const { classify } = recorder({ action: "prompt", reason: "publishing" });
+    const { classify, calls } = recorder({ action: "prompt", reason: "confirm target" });
     const h = harness({ classify, config: enabled });
-    expect(await run(h, "npm publish", { approve: async () => "once" })).toBeUndefined();
-    expect((await run(h, "npm publish", { approve: async () => "deny" }))?.block).toBe(true);
+    expect(await run(h, "touch /tmp/needs-confirmation", { approve: async () => "once" })).toBeUndefined();
+    expect((await run(h, "touch /tmp/needs-confirmation", { approve: async () => "deny" }))?.block).toBe(true);
+    expect(calls).toHaveLength(1);
   });
 
   it("logs would-be classifier denials in observe mode", async () => {

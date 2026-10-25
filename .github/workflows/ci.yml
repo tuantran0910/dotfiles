@@ -18,8 +18,12 @@ jobs:
         run: bun scripts/validate-marketplace.ts
 
   plugins:
-    name: plugin checks
-    runs-on: ubuntu-latest
+    name: plugin checks (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2

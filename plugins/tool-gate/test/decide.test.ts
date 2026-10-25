@@ -118,12 +118,12 @@ describe("path rules", () => {
 });
 
 describe("precedence and modes", () => {
-  it("first matching rule wins, so a project rule can override a default", () => {
+  it("an allow rule cannot override a matching deny", () => {
     const rules = [
       { id: "allow-rm-root-here", action: "allow" as const, tool: "bash", command: String.raw`rm -rf /`, reason: "sandboxed" },
       ...DEFAULT_RULES,
     ];
-    expect(evaluate(config({ rules }), bash("rm -rf /")).ruleId).toBe("allow-rm-root-here");
+    expect(evaluate(config({ rules }), bash("rm -rf /")).ruleId).toBe("rm-root");
   });
 
   it("default action applies when nothing matches", () => {

@@ -7,10 +7,14 @@
  */
 
 import { realpathSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 
 /** Converts a glob to a RegExp: `**` spans separators, `*` does not. */
 export function globToRegExp(glob: string): RegExp {
+  if (glob.endsWith("/**")) {
+    const parent = globToRegExp(glob.slice(0, -3)).source.slice(1, -1);
+    return new RegExp(`^${parent}(?:/.*)?$`);
+  }
   let out = "";
   for (let index = 0; index < glob.length; index += 1) {
     const character = glob[index]!;
@@ -42,7 +46,23 @@ export function globToRegExp(glob: string): RegExp {
 /** Expands `~` and resolves relative paths against the call's cwd. */
 export function resolveTarget(target: string, cwd: string, home: string): string {
   const expanded = target === "~" ? home : target.startsWith("~/") ? `${home}/${target.slice(2)}` : target;
-  return isAbsolute(expanded) ? expanded : resolve(cwd, expanded);
+  return resolve(cwd, expanded);
+}
+
+/** Resolve the existing ancestor too: a new file can be inside a symlink. */
+export function canonicalTarget(path: string): string {
+  try { return realpathSync(path); } catch {
+    const parent = dirname(path);
+    return parent === path ? path : resolve(canonicalTarget(parent), basename(path));
+  }
+}
+
+function canonicalPattern(pattern: string): string {
+  const wildcard = pattern.search(/[?*]/);
+  if (wildcard < 0) return canonicalTarget(pattern);
+  const slash = pattern.lastIndexOf("/", wildcard);
+  if (slash < 0) return pattern;
+  return `${canonicalTarget(pattern.slice(0, slash) || "/").replace(/\/$/, "")}/${pattern.slice(slash + 1)}`;
 }
 
 /**
@@ -79,17 +99,13 @@ export function matchesAnyPath(
   targets: string[],
   cwd: string,
   home: string,
+  allAliases = false,
 ): string | null {
   for (const target of targets) {
     const resolved = resolveTarget(target, cwd, home);
     // A symlink in the workspace must not smuggle a protected file past a rule:
     // test the real location as well as the path as written.
-    let real: string | null = null;
-    try {
-      real = realpathSync(resolved);
-    } catch {
-      real = null;
-    }
+    const real = canonicalTarget(resolved);
     // A home directory can itself be behind a symlink (macOS /var -> /private/var),
     // so `~` patterns are expanded against both spellings.
     const homes = new Set<string>([home]);
@@ -101,10 +117,11 @@ export function matchesAnyPath(
 
     for (const pattern of patterns) {
       for (const base of pattern.startsWith("~") ? homes : new Set([home])) {
-        const expanded = pattern.startsWith("~") ? resolveTarget(pattern, cwd, base) : pattern;
+        const expanded = pattern.startsWith("**/") ? pattern : resolveTarget(pattern, cwd, base);
         const regex = globToRegExp(expanded);
-        if (regex.test(resolved)) return resolved;
-        if (real !== null && regex.test(real)) return real;
+        const canonical = globToRegExp(canonicalPattern(expanded));
+        const matches = (path: string) => regex.test(path) || canonical.test(path);
+        if (allAliases ? matches(resolved) && matches(real) : matches(resolved) || matches(real)) return real;
       }
     }
   }
