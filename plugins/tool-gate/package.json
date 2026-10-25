@@ -1,10 +1,12 @@
 {
   "name": "tool-gate",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Argument-level permission policy for omp tool calls: bash command patterns and protected paths, with a deterministic decision and an audit log.",
   "private": true,
   "omp": {
-    "extensions": ["./src/index.ts"]
+    "extensions": [
+      "./src/index.ts"
+    ]
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

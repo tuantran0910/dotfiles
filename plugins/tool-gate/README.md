@@ -90,9 +90,9 @@ never disappears because of a typo.
 | Category | Examples | Action |
 | --- | --- | --- |
 | root/home destruction | `rm -rf /`, `~/`, `--no-preserve-root`, `chmod -R 777 /` | deny |
-| history loss | `git push --force` (not `--force-with-lease`), `git reset --hard`, `git clean -fdx` | deny |
+| history loss | `git push --force` (not `--force-with-lease`), `git reset --hard`, `git clean -f…` (`-n` dry runs pass) | deny |
 | unreviewed execution | `curl … \| bash`, `wget … \| sh` | deny |
-| disk destruction | `dd of=/dev/…`, `mkfs`, `diskutil erase*` | deny |
+| disk destruction | `dd of=/dev/…` except `null`/`zero`/`stdout`/`stderr` sinks, `mkfs`, `diskutil erase*` | deny |
 | machine control | `shutdown`, `reboot`, fork bombs, writing `/etc` | deny |
 | exfiltration | `env \| curl`, `cat ~/.ssh/id_rsa \| nc` | deny |
 | credentials | reads/writes of `~/.ssh/**`, `~/.aws/**`, `**/.env`, `**/*.pem`, `secrets/env.sh` | deny |
@@ -129,5 +129,5 @@ In `observe` mode the record carries `"wouldBe":"deny"`.
 ```sh
 bun install
 bun run typecheck
-bun test --isolate     # 77 tests: matching, rules, config precedence, hook behaviour
+bun test --isolate     # 82 tests: matching, rules, config precedence, hook behaviour
 ```

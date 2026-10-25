@@ -54,7 +54,7 @@ export const DEFAULT_RULES: Rule[] = [
     id: "git-clean-force",
     action: "deny",
     tool: "bash",
-    command: String.raw`\bgit\s+clean\s+(?:-[A-Za-z]*[fdx][A-Za-z]*\s*)+`,
+    command: String.raw`\bgit\s+clean\s+(?:-[A-Za-z]*f[A-Za-z]*\s*)+`,
     reason: "git clean deletes untracked files permanently; list them with `git clean -nd` first",
   },
   {
@@ -75,7 +75,7 @@ export const DEFAULT_RULES: Rule[] = [
     id: "dd-device",
     action: "deny",
     tool: "bash",
-    command: String.raw`\bdd\b[^\n]*\bof=/dev/`,
+    command: String.raw`\bdd\b[^\n]*\bof=/dev/(?!null\b|zero\b|stdout\b|stderr\b)`,
     reason: "writing to a block device can destroy the disk",
   },
   {
