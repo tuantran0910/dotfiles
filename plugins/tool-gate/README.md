@@ -165,6 +165,24 @@ In `observe` mode the record carries `"wouldBe":"deny"`.
 - **Policy tampering is prompted**, not silently allowed: rewriting
   `tool-gate.json`/`.log` through bash hits `gate-tamper`.
 
+## Install note
+
+`omp plugin install` copies the plugin but does not install its dependencies. The
+classifier needs one:
+
+```sh
+cd ~/.omp/plugins/cache/plugins/tuantran0910-dotfiles___tool-gate___<version>
+bun install --production
+```
+
+`bootstrap.sh --omp` does this automatically for any cached plugin that declares
+dependencies. Without it the classifier cannot load, and `onError: deny` blocks
+every unmatched non-read-only call — fail-closed, but not useful.
+
+Measured on this machine: 0.22 s to start the child process, ~7 s end-to-end for a
+cold GLM classifier call, ~0 s for a cached verdict. Only calls that match no rule
+pay it.
+
 ## Development
 
 ```sh
