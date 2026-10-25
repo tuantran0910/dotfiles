@@ -18,7 +18,7 @@ import { homedir } from "node:os";
 
 import { appendAudit, auditPath } from "./audit.ts";
 import { needsClassification } from "./classify-input.ts";
-import { createClassifier, type ClassifyFn } from "./classifier.ts";
+import { createClassifier, recentInstructions, type ClassifyFn } from "./classifier.ts";
 import { loadConfig } from "./config.ts";
 import { evaluate } from "./decide.ts";
 import type { Action, Mode } from "./types.ts";
@@ -144,7 +144,8 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
         } else {
           classifierFn ??= options.classify ?? createClassifier(pi, ctx, classifier);
           classifierCalls += 1;
-          const answer = await classifierFn(call, intent);
+          const context = intent.length > 0 ? intent : recentInstructions(ctx.sessionManager);
+          const answer = await classifierFn(call, context);
           verdict =
             answer ?? {
               action: classifier.onError,

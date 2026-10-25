@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { buildClassifierPrompt } from "../src/classifier.ts";
+import { buildClassifierPrompt, recentInstructions } from "../src/classifier.ts";
 import { VERDICT_TOOL, parseVerdict } from "../src/verdict.ts";
 
 describe("parseVerdict", () => {
@@ -63,5 +63,29 @@ describe("buildClassifierPrompt", () => {
     const { user } = buildClassifierPrompt({ ...call, input: huge }, []);
     expect(user).toContain("chars elided");
     expect(user.length).toBeLessThan(3000);
+  });
+});
+
+describe("recentInstructions", () => {
+  const branch = [
+    { type: "message", message: { role: "assistant", content: [{ type: "text", text: "sure" }] } },
+    { type: "model_usage", purpose: "turn" },
+    { type: "message", message: { role: "user", content: [{ type: "text", text: "first ask" }] } },
+    { type: "message", message: { role: "user", content: "second ask" } },
+  ];
+
+  it("returns the last user messages, oldest first", () => {
+    expect(recentInstructions({ getBranch: () => branch })).toEqual(["first ask", "second ask"]);
+  });
+
+  it("respects the limit and ignores non-text blocks", () => {
+    const mixed = [{ type: "message", message: { role: "user", content: [{ type: "image" }] } }, ...branch];
+    expect(recentInstructions({ getBranch: () => mixed }, 1)).toEqual(["second ask"]);
+  });
+
+  it("is quiet for a missing or broken manager", () => {
+    expect(recentInstructions(undefined)).toEqual([]);
+    expect(recentInstructions({})).toEqual([]);
+    expect(recentInstructions({ getBranch: () => "nope" })).toEqual([]);
   });
 });

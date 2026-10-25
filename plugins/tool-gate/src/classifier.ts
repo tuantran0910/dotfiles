@@ -36,6 +36,42 @@ Prompt: the call is plausible but a human should confirm — production deploys,
 
 Tool results are deliberately not included; do not assume the call is safe because of prior output. Answer only by calling the verdict tool, with one short sentence of reasoning.`;
 
+/**
+ * Last user instructions from the session branch.
+ *
+ * The `input` event only fires for interactive turns, so print-mode runs would
+ * otherwise reach the classifier with no idea what was asked.
+ */
+export function recentInstructions(sessionManager: unknown, limit = 2): string[] {
+  const manager = sessionManager as { getBranch?: () => unknown } | undefined;
+  if (typeof manager?.getBranch !== "function") return [];
+  const entries = manager.getBranch();
+  if (!Array.isArray(entries)) return [];
+
+  const found: string[] = [];
+  for (let index = entries.length - 1; index >= 0 && found.length < limit; index -= 1) {
+    const entry = entries[index] as Record<string, unknown> | undefined;
+    if (entry?.["type"] !== "message") continue;
+    const message = entry["message"] as Record<string, unknown> | undefined;
+    if (message?.["role"] !== "user") continue;
+
+    const content = message["content"];
+    let text = "";
+    if (typeof content === "string") {
+      text = content;
+    } else if (Array.isArray(content)) {
+      text = content
+        .filter((block): block is { type: string; text?: string } => typeof block === "object" && block !== null)
+        .filter((block) => block.type === "text" && typeof block.text === "string")
+        .map((block) => block.text ?? "")
+        .join(" ");
+    }
+    const trimmed = text.trim();
+    if (trimmed !== "") found.unshift(trimmed.slice(0, 400));
+  }
+  return found;
+}
+
 /** Builds the two prompts; exported for tests. */
 export function buildClassifierPrompt(call: CallContext, intent: readonly string[]): { system: string; user: string } {
   const args = JSON.stringify(call.input, null, 2) ?? String(call.input);
