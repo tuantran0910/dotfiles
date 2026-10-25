@@ -1,12 +1,12 @@
 modelRoles:
   default: opencode-go/deepseek-v4.1-flash
-  smol: opencode-go/glm-5.3-flash
-  slow: opencode-go/deepseek-v4-pro
-  plan: opencode-go/glm-5.3
-  commit: opencode-go/glm-5.3-flash
-  tiny: opencode-go/beam-free
-  vision: opencode-go/gemini-4-argon
-  task: opencode-go/glm-5.3-flash
+  smol: opencode-go/deepseek-v4.1-flash
+  slow: opencode-go/deepseek-v4.1-flash
+  plan: opencode-go/deepseek-v4.1-flash
+  commit: opencode-go/deepseek-v4.1-flash
+  tiny: opencode-go/deepseek-v4.1-flash
+  vision: opencode-go/deepseek-v4.1-flash
+  task: opencode-go/deepseek-v4.1-flash
 setupVersion: 2
 tools:
   approval: {}
