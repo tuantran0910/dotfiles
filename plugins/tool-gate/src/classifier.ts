@@ -11,8 +11,9 @@
  */
 
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import type { CallContext, ClassifierConfig } from "./types.ts";
 import { VERDICT_TOOL, parseVerdict, type Verdict } from "./verdict.ts";
@@ -94,18 +95,40 @@ export function buildClassifierPrompt(call: CallContext, intent: readonly string
 
 let cachedLoader: CompleteSimple | null | undefined;
 
+/**
+ * Candidate specifiers for `completeSimple`.
+ *
+ * omp does not expose a completion API to extensions, and a marketplace plugin is
+ * loaded from a path where a bare specifier may not resolve. So: try the bare
+ * specifier, then an explicit override, then walk up from this module and the
+ * working directory looking for an installed `pi-ai`.
+ */
+export function completeSimpleCandidates(): string[] {
+  const candidates = ["@oh-my-pi/pi-ai/stream"];
+  const override = process.env["TOOL_GATE_PI_AI"];
+  if (override) candidates.push(override);
+
+  const rel = ["node_modules/@oh-my-pi/pi-ai/src/stream.ts", "node_modules/@oh-my-pi/pi-ai/src/stream.js"];
+  for (const base of [import.meta.dir, process.cwd(), homedir()]) {
+    let directory = base;
+    for (let depth = 0; depth < 6; depth += 1) {
+      for (const suffix of rel) candidates.push(join(directory, suffix));
+      const parent = dirname(directory);
+      if (parent === directory) break;
+      directory = parent;
+    }
+  }
+  return [...new Set(candidates)];
+}
+
 /** Resolves `completeSimple` lazily; `null` means confirmed unavailable. */
-export async function loadCompleteSimple(): Promise<CompleteSimple | null> {
+export async function loadCompleteSimple(debug = false): Promise<CompleteSimple | null> {
   if (cachedLoader !== undefined) return cachedLoader;
-  const home = homedir();
-  const candidates = [
-    "@oh-my-pi/pi-ai/stream",
-    join(home, ".bun/install/global/node_modules/@oh-my-pi/pi-ai/src/stream.ts"),
-  ];
-  for (const spec of candidates) {
+  for (const spec of completeSimpleCandidates()) {
     try {
       const module = (await import(spec)) as { completeSimple?: CompleteSimple };
       if (typeof module.completeSimple === "function") {
+        if (debug) console.error(`tool-gate: completeSimple loaded from ${spec}`);
         cachedLoader = module.completeSimple;
         return cachedLoader;
       }
@@ -113,6 +136,7 @@ export async function loadCompleteSimple(): Promise<CompleteSimple | null> {
       // try the next candidate
     }
   }
+  if (debug) console.error("tool-gate: no completeSimple candidate resolved");
   cachedLoader = null;
   return null;
 }
@@ -131,7 +155,7 @@ export function createClassifier(pi: ExtensionAPI, ctx: ClassifierContext, confi
       return null;
     }
 
-    const complete = await loadCompleteSimple();
+    const complete = await loadCompleteSimple(process.env["TOOL_GATE_DEBUG"] === "1");
     if (complete === null) {
       pi.logger.warn("tool-gate: classifier unavailable (completeSimple not found); using onError policy");
       return null;
