@@ -122,21 +122,26 @@ export function completeSimpleCandidates(): string[] {
 }
 
 /** Resolves `completeSimple` lazily; `null` means confirmed unavailable. */
-export async function loadCompleteSimple(debug = false): Promise<CompleteSimple | null> {
+export async function loadCompleteSimple(
+  log: (message: string) => void = () => {},
+): Promise<CompleteSimple | null> {
   if (cachedLoader !== undefined) return cachedLoader;
-  for (const spec of completeSimpleCandidates()) {
+  const candidates = completeSimpleCandidates();
+  log(`tool-gate: probing ${candidates.length} completeSimple candidates (module dir ${import.meta.dir})`);
+  for (const spec of candidates) {
+    if (spec.startsWith("/") && !existsSync(spec)) continue;
     try {
       const module = (await import(spec)) as { completeSimple?: CompleteSimple };
       if (typeof module.completeSimple === "function") {
-        if (debug) console.error(`tool-gate: completeSimple loaded from ${spec}`);
+        log(`tool-gate: completeSimple loaded from ${spec}`);
         cachedLoader = module.completeSimple;
         return cachedLoader;
       }
-    } catch {
-      // try the next candidate
+    } catch (error) {
+      log(`tool-gate: candidate failed ${spec}: ${error instanceof Error ? error.message.slice(0, 80) : "error"}`);
     }
   }
-  if (debug) console.error("tool-gate: no completeSimple candidate resolved");
+  log(`tool-gate: no completeSimple candidate resolved (tried ${candidates.slice(0, 4).join(", ")})`);
   cachedLoader = null;
   return null;
 }
@@ -155,7 +160,9 @@ export function createClassifier(pi: ExtensionAPI, ctx: ClassifierContext, confi
       return null;
     }
 
-    const complete = await loadCompleteSimple(process.env["TOOL_GATE_DEBUG"] === "1");
+    const complete = await loadCompleteSimple(
+      process.env["TOOL_GATE_DEBUG"] === "1" ? (message: string) => pi.logger.info(message) : () => {},
+    );
     if (complete === null) {
       pi.logger.warn("tool-gate: classifier unavailable (completeSimple not found); using onError policy");
       return null;
