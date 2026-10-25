@@ -18,6 +18,13 @@
       "homepage": "https://github.com/tuantran0910/dotfiles/tree/main/plugins/pr-wording-review"
     },
     {
+      "name": "tool-gate",
+      "description": "Argument-level permission policy: bash command patterns and protected paths, deterministic decisions, JSONL audit log.",
+      "source": "./tool-gate",
+      "category": "security",
+      "homepage": "https://github.com/tuantran0910/dotfiles/tree/main/plugins/tool-gate"
+    },
+    {
       "name": "worktree-kit",
       "description": "One worktree tool the agent cannot misuse: placement is owned by the plugin, and direct git worktree commands get flagged.",
       "source": "./worktree-kit",

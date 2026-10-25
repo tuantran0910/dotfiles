@@ -92,6 +92,7 @@ MANIFEST=(
   "home/.codex/herdr-agent-state.sh|.codex/herdr-agent-state.sh"
   "omp/config.yml|.omp/agent/config.yml"
   "omp/extensions|.omp/agent/extensions"
+  "omp/tool-gate.json|.omp/agent/tool-gate.json"
 )
 
 echo "== configs"

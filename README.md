@@ -70,9 +70,10 @@ Currently published:
 | Plugin | Category | What it does |
 | --- | --- | --- |
 | `pr-wording-review` | productivity | interrupts PR text that reads as machine-generated, so the agent checks its own wording |
+| `tool-gate` | security | argument-level rules: denies destructive shell commands and protected paths, prompts for infrastructure actions, logs every decision |
 | `worktree-kit` | development | the `worktree` tool: placement owned by the plugin, stray direct commands flagged |
 
-Every plugin here is first-party: no third-party plugin code is vendored or installed. `pr-wording-review` and `worktree-kit` reimplement behaviour that was previously third-party (`unslop-pr`, `worktree-manager`). `github-comment-guard`, `git-commit-linter`, `omp-plugin-mcps` and `omp-permission-guard` were dropped without replacement.
+Every plugin here is first-party: no third-party plugin code is vendored or installed. `tool-gate` is the permission layer: omp decides which *tools* prompt, tool-gate decides which *arguments* are allowed. `pr-wording-review` and `worktree-kit` reimplement behaviour that was previously third-party (`unslop-pr`, `worktree-manager`). `github-comment-guard`, `git-commit-linter`, `omp-plugin-mcps` and `omp-permission-guard` were dropped without replacement.
 
 **Lockfiles are deliberately not committed** (`bun.lock` is gitignored). A committed lock resolved against a private registry is exactly what broke installs upstream; dependencies are installed by whoever installs the plugin.
 

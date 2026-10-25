@@ -1,0 +1,28 @@
+{
+  "mode": "enforce",
+  "defaultAction": "allow",
+  "log": true,
+  "rules": [
+    {
+      "id": "protect-config-backups",
+      "action": "deny",
+      "tool": "read|write|edit",
+      "paths": ["~/.dotfiles-backup/**", "~/.claude/backups/**"],
+      "reason": "old config snapshots can still contain credentials"
+    },
+    {
+      "id": "no-plugin-install-without-marketplace",
+      "action": "prompt",
+      "tool": "bash",
+      "command": "\\bomp\\s+plugin\\s+install\\s+(?!\\S+@)\\S+",
+      "reason": "an unqualified plugin name can resolve to an npm package; qualify it as name@marketplace"
+    },
+    {
+      "id": "stop-herdr-server",
+      "action": "prompt",
+      "tool": "bash",
+      "command": "\\bherdr\\s+server\\s+stop\\b",
+      "reason": "stopping the Herdr server ends every agent pane in this session"
+    }
+  ]
+}

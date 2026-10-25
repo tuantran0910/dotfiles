@@ -8,3 +8,5 @@ modelRoles:
   vision: opencode-go/gemini-4-argon
   task: opencode-go/glm-5.3-flash
 setupVersion: 2
+tools:
+  approval: {}
