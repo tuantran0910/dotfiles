@@ -18,7 +18,8 @@ import { homedir } from "node:os";
 
 import { appendAudit, auditPath } from "./audit.ts";
 import { isReadOnlyCommand, needsClassification, readOnlyPaths } from "./classify-input.ts";
-import { buildClassifierPrompt, recentInstructions, type ClassifyFn } from "./classifier.ts";
+import { buildClassifierPrompt, type ClassifyFn } from "./classifier.ts";
+import { AuthorizationContext } from "./authorization.ts";
 import { createGuardClassifier } from "./classifier-router.ts";
 import { loadConfig } from "./config.ts";
 import { evaluate } from "./decide.ts";
@@ -27,12 +28,13 @@ import type { Action, Mode } from "./types.ts";
 import type { Verdict } from "./verdict.ts";
 
 const MODES: Mode[] = ["off", "observe", "enforce"];
+const PLUGIN_VERSION = "0.3.9";
 
 export default function toolGate(pi: ExtensionAPI, options: { classify?: ClassifyFn } = {}): void {
   const agentDir = process.env["TOOL_GATE_STATE_DIR"] ?? getAgentDir();
   const home = homedir();
   const sessionAllowed = new Set<string>();
-  const intent: string[] = [];
+  const authorization = new AuthorizationContext();
   const verdicts = new Map<string, Verdict>();
   let classifierCalls = 0;
   const pending = new Map<string, Promise<Verdict | null>>();
@@ -62,23 +64,22 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
   }
 
   pi.logger.info(
-    `tool-gate: loaded (${loaded.config.mode}, ${loaded.config.rules.length} rules, default ${loaded.config.defaultAction}, classifier ${loaded.config.classifier.enabled ? "on" : "off"})`,
+    `tool-gate: loaded ${PLUGIN_VERSION} (${loaded.config.mode}, ${loaded.config.rules.length} rules, default ${loaded.config.defaultAction}, classifier ${loaded.config.classifier.enabled ? "on" : "off"})`,
   );
 
   // Remember what the user asked for, so the classifier can judge intent.
-  pi.on("input", (event) => {
+  pi.on("input", (event, ctx) => {
     const text = event.text?.trim();
     if (text !== undefined && text !== "") {
       generation++;
       pending.clear();
-      intent.push(text);
-      if (intent.length > 2) intent.shift();
+      authorization.observe(text, ctx?.sessionManager);
     }
     return undefined;
   });
 
   function resetSession(): void {
-    intent.length = 0;
+    authorization.clear();
     classifierCalls = 0;
     modeOverride = null;
     reload(loadedCwd);
@@ -123,6 +124,7 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
 
       const lines = [
         `tool-gate: ${loaded.config.mode} — ${loaded.config.rules.length} rules, default ${loaded.config.defaultAction}`,
+        `version: ${PLUGIN_VERSION} (${import.meta.dir})`,
         `classifier: ${loaded.config.classifier.enabled ? `on (${loaded.config.classifier.backend ?? "model"}/${loaded.config.classifier.model}${loaded.config.classifier.fallbackModel ? `, fallback ${loaded.config.classifier.fallbackModel}` : ""}, ${classifierCalls}/${loaded.config.classifier.maxPerSession === -1 ? "unlimited" : loaded.config.classifier.maxPerSession} calls, ${verdicts.size} cached)` : "off"}`,
         `config: ${loaded.sources.length > 0 ? loaded.sources.join(", ") : "defaults only"}`,
         `audit: ${auditPath(agentDir)}`,
@@ -156,8 +158,10 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
 
     const classifier = config.classifier;
     let classifierKey: string | undefined;
+    let reviewedInstructions: string | undefined;
     if (evaluated.source === "default" && classifier.enabled && needsClassification(event.toolName, input)) {
-      const context = [...(intent.length > 0 ? intent : recentInstructions(ctx.sessionManager))];
+      const context = authorization.read(ctx.sessionManager);
+      reviewedInstructions = JSON.stringify(context);
       const activeModel = classifier.model === "@current" || classifier.fallbackModel === "@current" ? ctx.models?.current?.() : undefined;
       const key = JSON.stringify([event.toolName, input, ctx.cwd, home, resolvedPaths, context, activeModel?.provider, activeModel?.id, activeModel?.baseUrl]);
       classifierKey = key;
@@ -202,7 +206,7 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
       source = "classifier";
     }
 
-    if (callGeneration !== generation) {
+    if (callGeneration !== generation || (reviewedInstructions !== undefined && reviewedInstructions !== JSON.stringify(authorization.read(ctx.sessionManager)))) {
       action = "deny";
       reason = "policy or session changed while this decision was pending; retry the call";
     }
@@ -255,7 +259,7 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
         });
       } catch { answer = "deny"; }
 
-      if ((answer !== "once" && answer !== "session") || callGeneration !== generation) {
+      if ((answer !== "once" && answer !== "session") || callGeneration !== generation || (reviewedInstructions !== undefined && reviewedInstructions !== JSON.stringify(authorization.read(ctx.sessionManager)))) {
         effective = "deny";
         audit();
         return { block: true, reason: `tool-gate: the user denied this call (${ruleId}).` };

@@ -36,7 +36,7 @@ executed"), which breaks automation without protecting it.
 
 1. **Rules** — deny → prompt → allow. Project → user → defaults breaks ties within an action. A prompt or session grant cannot mask another rule's denial.
 2. **Read-only fast path** — `read`/`grep`/`glob`, and literal shell reads like `ls`, `git status`, `rg`, `cat` skip the classifier. Literal shell operands also pass through file path policy. Interpreters, package runners, newlines, expansion, executable hooks, and mutating flags require classification.
-3. **Classifier** (optional) — only calls that matched no rule. It sees the complete arguments, canonical file targets, working directory, and the user's last two instructions. Tool results are excluded directly; hostile text can still reach it through proposed arguments.
+3. **Classifier** (optional) — only calls that matched no rule. It sees the complete arguments, canonical file targets, working directory, and retained user instructions. Tool results are excluded directly; hostile text can still reach it through proposed arguments.
 4. **Default action** — `allow` unless configured otherwise.
 
 The tracked policy uses **Jev Free through OpenCode Console**, with the session's
@@ -95,11 +95,26 @@ usage counter; changing an exhausted finite limit to `-1` takes effect
 immediately.
 
 Classifier settings are user-only: a repository cannot enable, disable or soften it.
+Authorization retains the eight most recent substantive user messages plus the
+last two messages, in chronological order. Repeated short continuations such as
+"continue" do not evict the task or its restrictions. The persisted session branch
+is authoritative; interactive input is buffered only until persistence catches up.
+Messages arriving without an input event are included too. Later restrictions
+override older permissions, and historical tasks do not authorize unrelated work.
+This is a bounded context window, not permanent authorization memory. Individual
+instructions are never clipped; oversized review context still requires confirmation.
+
+Both judge backends share a policy that explicitly covers authorized source/test
+edits, appending test code, formatting, builds, typechecks and local tests. Shell
+syntax and security-related words in source are not sufficient reasons to prompt;
+every actual effect must still be authorized. Sensitive behavior hidden in tests,
+heredocs or trailing commands remains subject to the same restrictions.
+
 Verdicts are keyed by the complete call, cwd, canonical file targets and user
 intent. Concurrent identical calls share one judge request. Transient failures
 are not cached. Reloads, cwd changes and session switches invalidate the cache;
 pending decisions are rejected after policy, session or intent changes.
-`/tool-gate` shows calls used, cache size and model.
+`/tool-gate` shows calls used, cache size, model, loaded version and source directory.
 
 One deadline covers the complete classification pipeline. An unresolved ordinary
 judge alias fails closed; the session model is used only by an explicit `@current`.
@@ -252,6 +267,22 @@ Jev request then has no usable model fallback and `onError: deny` blocks the cal
 
 After upgrading the cached plugin, use `/restart` in an existing omp session to
 load the new code and resume that session. `/tool-gate reload` reloads policy only.
+
+## Judge evaluation
+
+From this plugin directory, `bun run eval:jev` describes the evaluation without
+making network requests. `bun run eval:jev --live --compare` sends the 20 labeled
+synthetic proposals to Jev Free, comparing the frozen 0.3.8 prompt/context with the
+current version. It never executes proposals or invokes the paid fallback.
+Cases include authorized test appends, formatters, CSRF source refactors,
+continuations, revocations, credential exposure, prompt injection and malicious
+commands after a heredoc. `--output PATH` writes a new private JSON report and
+refuses to overwrite existing files. A provider error stops the evaluation;
+unavailable responses provide no evidence about model quality.
+
+The 0.3.9 live comparison encountered HTTP 429 from the first request, including
+the separate historical test-append replay. No improvement in model accuracy or
+prompt frequency has been measured. The allow threshold remains 0.95.
 
 Measured before 0.3.6 on this machine: 0.22 s to start the child process, ~7 s end-to-end for a
 cold GLM classifier call, ~0 s for a cached verdict. Only calls that match no rule

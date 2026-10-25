@@ -1,5 +1,28 @@
 # tool-gate 0.3.6 review and regression harness
 
+## 0.3.9 follow-up: authorization retention and development criteria
+
+Both judge transports now share explicit criteria for task-authorized source/test
+edits (including append/heredoc), formatting and local verification, with separate
+treatment of source-code strings and actual command effects. The allow threshold
+remains 0.95. Authorization retains eight substantive user messages and the last
+two messages; repeated continuation replies do not evict the task. Persisted user
+messages are consulted even after interactive input, fixing omission of newer
+branch-only restrictions. In-flight decisions and UI approvals are rejected if
+their user context changes. This window remains bounded, so older instructions
+can still be omitted; it is not permanent authorization storage.
+
+`authorization.test.ts` exercises extraction, task retention, restriction ordering,
+temporary manager failures, session clearing, branch-only updates, stale approvals
+and cache isolation. The opt-in `scripts/evaluate-jev.ts` compares 20 labeled
+synthetic proposals against the frozen 0.3.8 policy/context without executing tools
+or invoking a paid fallback. The live comparison and historical call replay both
+received HTTP 429, so model-quality improvement is unmeasured. The runner now
+stops on the first provider failure. Loaded version and source are shown in status
+to distinguish a running old plugin from updated files on disk.
+Local validation passes 517 tests across 16 files, typecheck (including the
+evaluation script), marketplace validation and the evaluation's network-free mode.
+
 ## 0.3.7 follow-up: live classifier failure and Jev Free
 
 The blocked statistics-test edit was reproduced with judgment-only requests;
