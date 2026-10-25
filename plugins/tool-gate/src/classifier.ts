@@ -146,6 +146,51 @@ export async function loadCompleteSimple(
   return null;
 }
 
+/**
+ * Script run in a child `bun` process.
+ *
+ * In-process resolution of `pi-ai` fails in a marketplace plugin: the package is
+ * found by absolute path, but its own bare imports resolve against the runtime's
+ * root rather than the plugin's node_modules. A child process started in the
+ * plugin directory resolves normally.
+ */
+const SUBCLASSIFIER_SCRIPT = `
+const payload = JSON.parse(await Bun.stdin.text());
+const { completeSimple } = await import("@oh-my-pi/pi-ai/stream");
+const message = await completeSimple(payload.model, payload.context, payload.options);
+process.stdout.write(JSON.stringify(message));
+`;
+
+async function classifyInSubprocess(
+  payload: unknown,
+  timeoutMs: number,
+  cwd: string,
+): Promise<unknown | null> {
+  const bun = typeof Bun !== "undefined" ? Bun.which("bun") : null;
+  if (bun === null) return null;
+
+  const child = Bun.spawn([bun, "-e", SUBCLASSIFIER_SCRIPT], {
+    cwd,
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const timer = setTimeout(() => child.kill(), timeoutMs);
+  try {
+    child.stdin.write(JSON.stringify(payload));
+    await child.stdin.end();
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    if (code !== 0) throw new Error(stderr.trim().slice(0, 200) || `bun exited ${code}`);
+    return JSON.parse(stdout) as unknown;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 interface ClassifierContext {
   models: { resolve(spec: string): unknown; current(): unknown };
   modelRegistry: { getApiKey(model: unknown): Promise<string | undefined> };
@@ -160,35 +205,38 @@ export function createClassifier(pi: ExtensionAPI, ctx: ClassifierContext, confi
       return null;
     }
 
-    const complete = await loadCompleteSimple(
-      process.env["TOOL_GATE_DEBUG"] === "1" ? (message: string) => pi.logger.info(message) : () => {},
-    );
-    if (complete === null) {
-      pi.logger.warn("tool-gate: classifier unavailable (completeSimple not found); using onError policy");
-      return null;
-    }
-
     const apiKey = await ctx.modelRegistry.getApiKey(model);
     const { system, user } = buildClassifierPrompt(call, intent);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), config.timeoutMs);
+    const context = {
+      systemPrompt: [system],
+      messages: [{ role: "user", content: user, timestamp: Date.now() }],
+      tools: [VERDICT_TOOL],
+    };
+    const options = { ...CALL_OPTIONS, apiKey, tools: [VERDICT_TOOL] };
+    const pluginDir = `${import.meta.dir}/..`;
+    const debug = process.env["TOOL_GATE_DEBUG"] === "1";
+
+    const complete = await loadCompleteSimple(debug ? (message) => pi.logger.info(message) : () => {});
+    if (complete !== null) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), config.timeoutMs);
+      try {
+        const message = await complete(model, context, { ...options, signal: controller.signal });
+        return parseVerdict(message);
+      } catch (error) {
+        pi.logger.warn(`tool-gate: in-process classifier failed: ${error instanceof Error ? error.message : String(error)}`);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
 
     try {
-      const message = await complete(
-        model,
-        {
-          systemPrompt: [system],
-          messages: [{ role: "user", content: user, timestamp: Date.now() }],
-          tools: [VERDICT_TOOL],
-        },
-        { ...CALL_OPTIONS, apiKey, signal: controller.signal, tools: [VERDICT_TOOL] },
-      );
+      const message = await classifyInSubprocess({ model, context, options }, config.timeoutMs, pluginDir);
+      if (debug) pi.logger.info(`tool-gate: subprocess classifier answered ${message === null ? "nothing" : "a message"}`);
       return parseVerdict(message);
     } catch (error) {
-      pi.logger.warn(`tool-gate: classifier failed: ${error instanceof Error ? error.message : String(error)}`);
+      pi.logger.warn(`tool-gate: subprocess classifier failed: ${error instanceof Error ? error.message.slice(0, 160) : String(error)}`);
       return null;
-    } finally {
-      clearTimeout(timer);
     }
   };
 }
