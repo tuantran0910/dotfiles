@@ -1,13 +1,15 @@
 /**
  * tool-gate: argument-level permission policy for omp tool calls.
  *
- * omp already decides *which tools* need approval (`tools.approvalMode` plus
- * `tools.approval.<tool>`); that gate is per tool, and in print mode an
- * unresolved prompt becomes a denial. This plugin adds the layer omp does not
- * have: rules on the *arguments* — a bash command pattern or a file path — with a
- * deterministic decision and an audit trail.
+ * Decision order (first match wins):
+ *   1. explicit rules (deny/prompt/allow) from project, user, then defaults
+ *   2. read-only calls pass without a model
+ *   3. everything else that matched no rule may go to the classifier
+ *   4. configured default action
  *
- * Modes: `enforce` (default), `observe` (log only), `off`.
+ * The classifier is optional and never overrides a rule. If it is unavailable,
+ * errors, times out, or answers something that is not a verdict, `onError` applies
+ * (deny by default).
  */
 
 import type { ExtensionAPI, ExtensionCommandContext, ToolCallEvent } from "@oh-my-pi/pi-coding-agent";
@@ -15,17 +17,34 @@ import { getAgentDir } from "@oh-my-pi/pi-coding-agent";
 import { homedir } from "node:os";
 
 import { appendAudit, auditPath } from "./audit.ts";
+import { needsClassification } from "./classify-input.ts";
+import { createClassifier, type ClassifyFn } from "./classifier.ts";
 import { loadConfig } from "./config.ts";
 import { evaluate } from "./decide.ts";
 import type { Action, Mode } from "./types.ts";
+import type { Verdict } from "./verdict.ts";
 
 const ACTIONS: Action[] = ["allow", "deny", "prompt"];
 const MODES: Mode[] = ["off", "observe", "enforce"];
 
-export default function toolGate(pi: ExtensionAPI): void {
+/** Cheap stable key for the classifier cache. */
+function callKey(tool: string, input: Record<string, unknown>): string {
+  const text = `${tool}:${JSON.stringify(input)}`;
+  let hash = 5381;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = ((hash << 5) + hash + text.charCodeAt(index)) | 0;
+  }
+  return `${tool}:${hash}`;
+}
+
+export default function toolGate(pi: ExtensionAPI, options: { classify?: ClassifyFn } = {}): void {
   const agentDir = process.env["TOOL_GATE_STATE_DIR"] ?? getAgentDir();
   const home = homedir();
   const sessionAllowed = new Set<string>();
+  const intent: string[] = [];
+  const verdicts = new Map<string, Verdict>();
+  let classifierCalls = 0;
+  let classifierFn: ClassifyFn | null | undefined;
 
   let loadedCwd = "";
   /** Runtime override from /tool-gate mode; survives reloads. */
@@ -45,11 +64,22 @@ export default function toolGate(pi: ExtensionAPI): void {
   }
 
   pi.logger.info(
-    `tool-gate: loaded (${loaded.config.mode}, ${loaded.config.rules.length} rules, default ${loaded.config.defaultAction})`,
+    `tool-gate: loaded (${loaded.config.mode}, ${loaded.config.rules.length} rules, default ${loaded.config.defaultAction}, classifier ${loaded.config.classifier.enabled ? "on" : "off"})`,
   );
 
+  // Remember what the user asked for, so the classifier can judge intent.
+  pi.on("input", (event) => {
+    const text = event.text?.trim();
+    if (text !== undefined && text !== "") {
+      intent.push(text.slice(0, 400));
+      if (intent.length > 2) intent.shift();
+    }
+    return undefined;
+  });
+
   pi.registerCommand("tool-gate", {
-    description: "Show or change the tool gate. Usage: /tool-gate [status|mode <off|observe|enforce>|allow <rule>|reload]",
+    description:
+      "Show or change the tool gate. Usage: /tool-gate [status|mode <off|observe|enforce>|allow <rule>|reload]",
     handler: async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
       const [verb, argument] = args.trim().split(/\s+/, 2);
 
@@ -81,6 +111,7 @@ export default function toolGate(pi: ExtensionAPI): void {
 
       const lines = [
         `tool-gate: ${loaded.config.mode} — ${loaded.config.rules.length} rules, default ${loaded.config.defaultAction}`,
+        `classifier: ${loaded.config.classifier.enabled ? `on (${loaded.config.classifier.model}, ${classifierCalls}/${loaded.config.classifier.maxPerSession} calls, ${verdicts.size} cached)` : "off"}`,
         `config: ${loaded.sources.length > 0 ? loaded.sources.join(", ") : "defaults only"}`,
         `audit: ${auditPath(agentDir)}`,
       ];
@@ -94,29 +125,59 @@ export default function toolGate(pi: ExtensionAPI): void {
     if (modeOverride !== null) loaded.config.mode = modeOverride;
 
     const input = (event.input ?? {}) as Record<string, unknown>;
-    const decision = evaluate(
-      loaded.config,
-      { tool: event.toolName, input, cwd: ctx.cwd, home },
-      sessionAllowed,
-    );
+    const call = { tool: event.toolName, input, cwd: ctx.cwd, home };
+    const evaluated = evaluate(loaded.config, call, sessionAllowed);
+
+    let action: Action = evaluated.action;
+    let ruleId = evaluated.ruleId;
+    let reason = evaluated.reason;
+    let detail = evaluated.detail;
+    let source: "rule" | "classifier" | "default" = evaluated.ruleId === "default" ? "default" : "rule";
+
+    const classifier = loaded.config.classifier;
+    if (evaluated.ruleId === "default" && classifier.enabled && needsClassification(event.toolName, input)) {
+      const key = callKey(event.toolName, input);
+      let verdict = verdicts.get(key);
+      if (verdict === undefined) {
+        if (classifierCalls >= classifier.maxPerSession) {
+          verdict = { action: classifier.onError, reason: "classifier budget exhausted for this session" };
+        } else {
+          classifierFn ??= options.classify ?? createClassifier(pi, ctx, classifier);
+          classifierCalls += 1;
+          const answer = await classifierFn(call, intent);
+          verdict =
+            answer ?? {
+              action: classifier.onError,
+              reason: "no verdict from the classifier (unavailable, timeout or unparseable answer)",
+            };
+        }
+        verdicts.set(key, verdict);
+      }
+      action = verdict.action;
+      ruleId = "classifier";
+      reason = verdict.reason ?? "classifier decision";
+      detail = typeof input["command"] === "string" ? input["command"].slice(0, 200) : undefined;
+      source = "classifier";
+    }
 
     const observed = loaded.config.mode === "observe";
-    const effective: Action = observed ? "allow" : decision.action;
+    const effective: Action = observed ? "allow" : action;
 
     if (loaded.config.log) {
       appendAudit(agentDir, {
         tool: event.toolName,
         decision: effective,
-        ruleId: decision.ruleId,
-        wouldBe: observed ? decision.action : undefined,
-        detail: decision.detail,
+        ruleId,
+        source,
+        wouldBe: observed ? action : undefined,
+        detail,
       });
     }
 
     if (effective === "deny") {
       return {
         block: true,
-        reason: `tool-gate: blocked by rule "${decision.ruleId}" — ${decision.reason}. Ask the user to run it themselves, or run /tool-gate allow ${decision.ruleId} for this session.`,
+        reason: `tool-gate: blocked by ${source === "classifier" ? "the classifier" : `rule "${ruleId}"`} — ${reason}. Ask the user to run it themselves, or run /tool-gate allow ${ruleId} for this session.`,
       };
     }
 
@@ -125,25 +186,22 @@ export default function toolGate(pi: ExtensionAPI): void {
       if (approve === undefined) {
         return {
           block: true,
-          reason: `tool-gate: rule "${decision.ruleId}" requires confirmation (${decision.reason}), and this session has no UI to ask. Ask the user, then retry with /tool-gate allow ${decision.ruleId}.`,
+          reason: `tool-gate: ${source === "classifier" ? "the classifier wants confirmation" : `rule "${ruleId}" requires confirmation`} (${reason}), and this session has no UI to ask. Ask the user, then retry.`,
         };
       }
 
       const answer = await approve({
-        full: `tool-gate wants confirmation for ${event.toolName}\n\nRule: ${decision.ruleId}\n${decision.reason}${decision.detail ? `\n\nTarget: ${decision.detail}` : ""}`,
-        compact: `${event.toolName}: ${decision.ruleId}`,
-        session: `Allow ${decision.ruleId} for this session`,
+        full: `tool-gate wants confirmation for ${event.toolName}\n\n${source === "classifier" ? "Classifier" : `Rule: ${ruleId}`}\n${reason}${detail ? `\n\nTarget: ${detail}` : ""}`,
+        compact: `${event.toolName}: ${source === "classifier" ? "classifier" : ruleId}`,
+        session: `Allow ${ruleId} for this session`,
       });
 
       if (answer === "deny" || answer === undefined) {
-        return {
-          block: true,
-          reason: `tool-gate: the user denied this call (rule "${decision.ruleId}").`,
-        };
+        return { block: true, reason: `tool-gate: the user denied this call (${ruleId}).` };
       }
       if (answer === "session") {
-        sessionAllowed.add(decision.ruleId);
-        pi.logger.info(`tool-gate: rule ${decision.ruleId} approved for this session`);
+        sessionAllowed.add(ruleId);
+        pi.logger.info(`tool-gate: ${ruleId} approved for this session`);
       }
     }
 

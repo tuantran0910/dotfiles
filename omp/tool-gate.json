@@ -7,7 +7,10 @@
       "id": "protect-config-backups",
       "action": "deny",
       "tool": "read|write|edit",
-      "paths": ["~/.dotfiles-backup/**", "~/.claude/backups/**"],
+      "paths": [
+        "~/.dotfiles-backup/**",
+        "~/.claude/backups/**"
+      ],
       "reason": "old config snapshots can still contain credentials"
     },
     {
@@ -24,5 +27,12 @@
       "command": "\\bherdr\\s+server\\s+stop\\b",
       "reason": "stopping the Herdr server ends every agent pane in this session"
     }
-  ]
+  ],
+  "classifier": {
+    "enabled": true,
+    "model": "@smol",
+    "timeoutMs": 4000,
+    "maxPerSession": 200,
+    "onError": "deny"
+  }
 }

@@ -17,6 +17,18 @@ export interface Rule {
   reason: string;
 }
 
+/** Optional model-in-the-loop escalation for calls no rule matched. */
+export interface ClassifierConfig {
+  enabled: boolean;
+  /** Model spec or role alias resolved through `ctx.models`. */
+  model: string;
+  timeoutMs: number;
+  /** Hard cap on classifier calls per session. */
+  maxPerSession: number;
+  /** What to do when the classifier is unavailable, errors, times out, or answers garbage. */
+  onError: "allow" | "deny";
+}
+
 export interface GateConfig {
   mode: Mode;
   /** Action when no rule matches. Defaults to `allow`. */
@@ -24,6 +36,7 @@ export interface GateConfig {
   /** Append decisions to `<agent dir>/tool-gate.log`. Defaults to true. */
   log: boolean;
   rules: Rule[];
+  classifier: ClassifierConfig;
 }
 
 export interface Decision {

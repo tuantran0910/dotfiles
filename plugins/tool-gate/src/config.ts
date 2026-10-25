@@ -15,7 +15,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { compileCommand } from "./match.ts";
-import type { Action, GateConfig, Mode, Rule } from "./types.ts";
+import type { Action, ClassifierConfig, GateConfig, Mode, Rule } from "./types.ts";
 
 const ACTIONS: Action[] = ["allow", "deny", "prompt"];
 const MODES: Mode[] = ["off", "observe", "enforce"];
@@ -386,12 +386,21 @@ export const DEFAULT_RULES: Rule[] = [
   },
 ];
 
+export const DEFAULT_CLASSIFIER: ClassifierConfig = {
+  enabled: false,
+  model: "@smol",
+  timeoutMs: 4000,
+  maxPerSession: 200,
+  onError: "deny",
+};
+
 interface RawConfig {
   mode?: unknown;
   defaultAction?: unknown;
   log?: unknown;
   replaceDefaults?: unknown;
   rules?: unknown;
+  classifier?: unknown;
 }
 
 export interface LoadedConfig {
@@ -507,12 +516,35 @@ export function loadConfig(agentDir: string, cwd: string): LoadedConfig {
 
   const log = user?.log !== false;
 
+  // The classifier can be enabled (tightening) but a project file must not be
+  // able to turn it off or change its error policy.
+  const classifier = { ...DEFAULT_CLASSIFIER };
+  if (project?.classifier !== undefined) {
+    warnings.push(`${projectPath}: classifier settings are user-only and were ignored`);
+  }
+  const rawClassifier = user?.classifier;
+  if (rawClassifier !== undefined) {
+    if (typeof rawClassifier !== "object" || rawClassifier === null || Array.isArray(rawClassifier)) {
+      warnings.push(`${userPath}: classifier must be an object`);
+    } else {
+      const record = rawClassifier as Record<string, unknown>;
+      if (typeof record["enabled"] === "boolean") classifier.enabled = record["enabled"];
+      if (typeof record["model"] === "string" && record["model"] !== "") classifier.model = record["model"];
+      if (typeof record["timeoutMs"] === "number" && record["timeoutMs"] >= 500) classifier.timeoutMs = record["timeoutMs"];
+      if (typeof record["maxPerSession"] === "number" && record["maxPerSession"] >= 0) {
+        classifier.maxPerSession = record["maxPerSession"];
+      }
+      if (record["onError"] === "allow" || record["onError"] === "deny") classifier.onError = record["onError"];
+    }
+  }
+
   return {
     config: {
       mode,
       defaultAction,
       log,
       rules: [...projectRules, ...userRules, ...(replaceDefaults ? [] : DEFAULT_RULES)],
+      classifier,
     },
     sources,
     warnings,

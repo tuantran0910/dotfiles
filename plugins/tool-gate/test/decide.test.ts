@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 
-import { DEFAULT_RULES } from "../src/config.ts";
+import { DEFAULT_CLASSIFIER, DEFAULT_RULES } from "../src/config.ts";
 import { evaluate } from "../src/decide.ts";
 import type { CallContext, GateConfig } from "../src/types.ts";
 
@@ -8,7 +8,7 @@ const HOME = "/Users/me";
 const CWD = "/Users/me/work/repo";
 
 function config(overrides: Partial<GateConfig> = {}): GateConfig {
-  return { mode: "enforce", defaultAction: "allow", log: false, rules: DEFAULT_RULES, ...overrides };
+  return { mode: "enforce", defaultAction: "allow", log: false, rules: DEFAULT_RULES, classifier: DEFAULT_CLASSIFIER, ...overrides };
 }
 
 function bash(command: string): CallContext {

@@ -32,6 +32,25 @@ executed"), which breaks automation without protecting it.
   `tool-gate` be the argument-level layer. Set it stricter only if you also want
   per-tool prompts.
 
+## Decision order
+
+1. **Rules** — first match wins (project → user → defaults).
+2. **Read-only fast path** — `read`/`grep`/`glob`, and shell commands like `ls`, `git status`, `rg`, `cat` skip the classifier.
+3. **Classifier** (optional) — only calls that matched no rule. It sees the tool, the arguments, the working directory, and the user's last two instructions. It never sees tool results, so a hostile file cannot address it.
+4. **Default action** — `allow` unless configured otherwise.
+
+A classifier answer is `allow`, `deny` or `prompt`; no answer (timeout, provider error,
+unparseable text, budget exhausted) becomes `onError` — **deny by default**, the same
+fail-closed choice Claude Code documents.
+
+```json
+"classifier": { "enabled": true, "model": "@smol", "timeoutMs": 4000, "maxPerSession": 200, "onError": "deny" }
+```
+
+Classifier settings are user-only: a repository cannot enable, disable or soften it.
+Verdicts are cached per identical call for the session, and `/tool-gate` shows
+calls used, cache size and model.
+
 ## Modes
 
 | Mode | Behaviour |
@@ -147,7 +166,7 @@ In `observe` mode the record carries `"wouldBe":"deny"`.
 ```sh
 bun install
 bun run typecheck
-bun test --isolate     # 217 tests, including a 131-case adversarial corpus
+bun test --isolate     # 241 tests, including a 131-case adversarial corpus
 ```
 
 ## How this compares to Claude Code's auto mode
@@ -163,7 +182,7 @@ the action is denied.
 
 | | Claude auto mode | tool-gate |
 | --- | --- | --- |
-| Decision maker | classifier model (Sonnet 5 by default) | regex/glob rules |
+| Decision maker | classifier model (Sonnet 5 by default) | rules, then an optional `@smol` classifier for leftovers |
 | Latency/cost | a model round-trip per judged call | microseconds |
 | Novel situations | can reason about intent | miss unless a rule exists |
 | Determinism | same input, may differ by model/version | same input, same answer |

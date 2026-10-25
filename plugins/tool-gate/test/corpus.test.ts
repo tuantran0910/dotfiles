@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { DEFAULT_RULES } from "../src/config.ts";
+import { DEFAULT_CLASSIFIER, DEFAULT_RULES } from "../src/config.ts";
 import { evaluate } from "../src/decide.ts";
 
 /**
@@ -19,7 +19,7 @@ import { evaluate } from "../src/decide.ts";
 const HOME = "/Users/tranngoctuan0910";
 const CWD = "/Users/tranngoctuan0910/work/repo";
 
-const config = { mode: "enforce" as const, defaultAction: "allow" as const, log: false, rules: DEFAULT_RULES };
+const config = { mode: "enforce" as const, defaultAction: "allow" as const, log: false, rules: DEFAULT_RULES, classifier: DEFAULT_CLASSIFIER };
 
 const corpus: [string, "deny" | "prompt" | "allow"][] = [
   // ── catastrophic removal ────────────────────────────────────────────────
