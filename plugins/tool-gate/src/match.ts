@@ -6,6 +6,7 @@
  * be dodged with a relative path or a symlinked home directory.
  */
 
+import { realpathSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 
 /** Converts a glob to a RegExp: `**` spans separators, `*` does not. */
@@ -81,9 +82,30 @@ export function matchesAnyPath(
 ): string | null {
   for (const target of targets) {
     const resolved = resolveTarget(target, cwd, home);
+    // A symlink in the workspace must not smuggle a protected file past a rule:
+    // test the real location as well as the path as written.
+    let real: string | null = null;
+    try {
+      real = realpathSync(resolved);
+    } catch {
+      real = null;
+    }
+    // A home directory can itself be behind a symlink (macOS /var -> /private/var),
+    // so `~` patterns are expanded against both spellings.
+    const homes = new Set<string>([home]);
+    try {
+      homes.add(realpathSync(home));
+    } catch {
+      // home does not exist: the plain spelling is all we have
+    }
+
     for (const pattern of patterns) {
-      const expanded = pattern.startsWith("~") ? resolveTarget(pattern, cwd, home) : pattern;
-      if (globToRegExp(expanded).test(resolved)) return resolved;
+      for (const base of pattern.startsWith("~") ? homes : new Set([home])) {
+        const expanded = pattern.startsWith("~") ? resolveTarget(pattern, cwd, base) : pattern;
+        const regex = globToRegExp(expanded);
+        if (regex.test(resolved)) return resolved;
+        if (real !== null && regex.test(real)) return real;
+      }
     }
   }
   return null;

@@ -33,7 +33,7 @@ export const DEFAULT_RULES: Rule[] = [
     id: "rm-root",
     action: "deny",
     tool: "bash",
-    command: String.raw`\brm\s+(?:-[A-Za-z-]+\s+)*(?:/|/\*|~|~/|\$HOME/?)(?=\s|$|;|&|\|)`,
+    command: String.raw`\brm\s+(?:(?:-[A-Za-z-]+|--)\s+)*(?:["']?(?:/\*?|~\/?|\$HOME\/?|\$\{HOME\}\/?)["']?)(?=[\s"'\x60;|&)]|$)`.replace("\\x60", "`"),
     reason: "refusing to remove a root or home directory",
   },
   {
@@ -70,6 +70,13 @@ export const DEFAULT_RULES: Rule[] = [
     tool: "bash",
     command: String.raw`\b(?:curl|wget)\b[^\n|]*\|\s*(?:sudo\s+)?(?:bash|sh|zsh|ksh|dash)\b`,
     reason: "piping a download into a shell executes unreviewed code; download, inspect, then run",
+  },
+  {
+    id: "pipe-to-shell",
+    action: "deny",
+    tool: "bash",
+    command: String.raw`\|\s*(?:sudo\s+)?(?:bash|sh|zsh|ksh|dash)\b`,
+    reason: "piping text into a shell executes it unreviewed; run the script after reading it",
   },
   {
     id: "dd-device",
@@ -121,6 +128,156 @@ export const DEFAULT_RULES: Rule[] = [
     reason: "piping environment or credential files to the network is exfiltration",
   },
 
+  {
+    id: "find-delete-root",
+    action: "deny",
+    tool: "bash",
+    command: String.raw`\bfind\s+(?:/|~|\$HOME|\$\{HOME\})(?:/|\s)[^\n]*(?:-delete\b|-exec\s+rm\b|\|\s*xargs\s+rm\b)`,
+    reason: "find on a whole root or home tree deletes files with no listing",
+  },
+  {
+    id: "find-delete-tree",
+    action: "prompt",
+    tool: "bash",
+    command: String.raw`\bfind\s+\.(?:\s|/)[^\n]*-delete\b`,
+    reason: "deletes every match under the working tree",
+  },
+  {
+    id: "git-push-refspec-force",
+    action: "deny",
+    tool: "bash",
+    command: String.raw`\bgit\s+push\b[^\n]*(?:\s\+\S|--mirror\b)`,
+    reason: "a +refspec or --mirror rewrites the remote's refs",
+  },
+  {
+    id: "process-substitution-exec",
+    action: "deny",
+    tool: "bash",
+    command: String.raw`\b(?:ba|z|k|da)?sh\s+<\(\s*(?:curl|wget)\b`,
+    reason: "executing a downloaded script through process substitution skips review",
+  },
+  {
+    id: "secret-read-bash",
+    action: "deny",
+    tool: "bash",
+    command: String.raw`\b(?:cat|bat|less|more|head|tail|strings|base64|xxd|od)\b[^\n]*(?:\.ssh/|\.aws/|\.gnupg/|\bid_(?:rsa|ed25519|ecdsa)\b|\.pem\b|secrets/env\.sh|\.env(?!\.(?:example|sample|template)))`,
+    reason: "reads credential material; use the user's own terminal",
+  },
+  {
+    id: "upload-secrets",
+    action: "deny",
+    tool: "bash",
+    command: String.raw`\b(?:curl\s+[^\n]*-T|scp|rsync)\b[^\n]*(?:\.ssh/|\bid_(?:rsa|ed25519|ecdsa)\b|\.pem\b|secrets/env\.sh|\.env(?!\.(?:example|sample|template)))`,
+    reason: "sends credential files off the machine",
+  },
+  {
+    id: "crontab-remove",
+    action: "deny",
+    tool: "bash",
+    command: String.raw`\bcrontab\s+-r\b`,
+    reason: "removes every scheduled job with no backup",
+  },
+
+  {
+    id: "reverse-shell",
+    action: "deny",
+    tool: "bash",
+    command: String.raw`\b(?:nc|ncat|netcat)\b[^\n]*\s-e\s|/dev/(?:tcp|udp)/`,
+    reason: "reverse shells hand an interactive session to someone else",
+  },
+  {
+    id: "db-migration-force",
+    action: "deny",
+    tool: "bash",
+    command: String.raw`\b(?:drizzle-kit\s+push\s+--force|prisma\s+(?:migrate\s+reset|db\s+push\s+--force-reset)|rails\s+db:(?:drop|reset)|alembic\s+downgrade\s+base|knex\s+migrate:rollback\s+--all|flyway\s+clean)\b`,
+    reason: "resets or drops schema and data without a backup step",
+  },
+  {
+    id: "destroy-remote-api",
+    action: "prompt",
+    tool: "bash",
+    command: String.raw`\b(?:curl|http|gh\s+api)\b[^\n]*(?:-X|--request|\s-X)\s*["']?DELETE\b`,
+    reason: "a destructive API call can remove remote infrastructure and its backups",
+  },
+  {
+    id: "docker-privileged",
+    action: "prompt",
+    tool: "bash",
+    command: String.raw`\bdocker\s+run\b[^\n]*(?:--privileged|-v\s+/:|--pid=host|--net=host|/var/run/docker\.sock)`,
+    reason: "the container can reach the host",
+  },
+  {
+    id: "gate-tamper",
+    action: "prompt",
+    tool: "bash",
+    command: String.raw`\b(?:rm|mv|cp|truncate|shred|tee)\b[^\n]*tool-gate\.(?:json|log)|>>?\s*\S*tool-gate\.(?:json|log)|sed\s+-i[^\n]*tool-gate\.json`,
+    reason: "the guard's own policy or audit trail is being rewritten",
+  },
+
+  {
+    id: "self-approve-or-merge-pr",
+    action: "deny",
+    tool: "bash",
+    command: String.raw`\bgh\s+pr\s+(?:merge|review\s+[^\n]*--approve)\b`,
+    reason: "an agent must not approve or merge its own pull request",
+  },
+  {
+    id: "print-credential",
+    action: "prompt",
+    tool: "bash",
+    command: String.raw`\bgh\s+auth\s+token\b|\b(?:echo|printf|printenv|env)\b[^\n]*(?:TOKEN|SECRET|API_KEY|PASSWORD)\b[^\n]*\b(?:grep|sed|awk|cut)\b|\bprintenv\s+(?:\w*TOKEN|\w*SECRET|\w*KEY)\b`,
+    reason: "prints a live credential into the transcript",
+  },
+  {
+    id: "git-stash-destroy",
+    action: "prompt",
+    tool: "bash",
+    command: String.raw`\bgit\s+stash\s+(?:drop|clear)\b`,
+    reason: "permanently discards stashed work",
+  },
+  {
+    id: "registry-bypass",
+    action: "prompt",
+    tool: "bash",
+    command: String.raw`\b(?:npm|bun|pnpm|yarn)\b[^\n]*(?:--registry\s+\S*registry\.npmjs\.org|config\s+set\s+registry\s+\S*registry\.npmjs\.org)`,
+    reason: "routes installs around the configured internal registry",
+  },
+  {
+    id: "disarm-tls-guard",
+    action: "prompt",
+    tool: "bash",
+    command: String.raw`\b(?:curl|wget)\b[^\n]*\s(?:--insecure|-k)\b`,
+    reason: "disables certificate verification",
+  },
+  {
+    id: "unattended-agent-loop",
+    action: "prompt",
+    tool: "bash",
+    command: String.raw`--dangerously-skip-permissions\b|--yes-always\b|--no-sandbox\b`,
+    reason: "starts another agent with approval and isolation disabled",
+  },
+  {
+    id: "dns-or-tls-write",
+    action: "prompt",
+    tool: "bash",
+    command: String.raw`\baws\s+route53\b|\b(?:cloudflare|flarectl|certbot|acme\.sh)\b`,
+    reason: "changes DNS records or TLS certificates",
+  },
+  {
+    id: "ci-disable",
+    action: "prompt",
+    tool: "bash",
+    command: String.raw`\bgh\s+workflow\s+disable\b`,
+    reason: "turns off CI checks",
+  },
+  {
+    id: "tmp-wildcard-delete",
+    action: "prompt",
+    tool: "bash",
+    command: String.raw`\brm\s+-[A-Za-z]*[rf][A-Za-z]*\s+(?:/tmp|\$TMPDIR)/\*`,
+    reason: "wildcard deletion in a shared scratch directory",
+  },
+
   // ── infrastructure, prompts rather than blocks ────────────────────────────
   {
     id: "sudo",
@@ -156,6 +313,27 @@ export const DEFAULT_RULES: Rule[] = [
     tool: "bash",
     command: String.raw`\b(?:DROP|TRUNCATE)\s+(?:DATABASE|SCHEMA|TABLE)\b`,
     reason: "destructive SQL",
+  },
+  {
+    id: "git-discard-worktree",
+    action: "prompt",
+    tool: "bash",
+    command: String.raw`\bgit\s+(?:restore|checkout)\s+(?:--\s+)?\.(?:\s|$)`,
+    reason: "discards uncommitted changes across the working tree",
+  },
+  {
+    id: "git-branch-force-delete",
+    action: "prompt",
+    tool: "bash",
+    command: String.raw`\bgit\s+branch\s+-D\b`,
+    reason: "deletes a branch even when it is not merged",
+  },
+  {
+    id: "launchctl-unload",
+    action: "prompt",
+    tool: "bash",
+    command: String.raw`\blaunchctl\s+(?:unload|bootout)\b`,
+    reason: "stops a system or user service",
   },
   {
     id: "package-publish",
@@ -200,6 +378,8 @@ export const DEFAULT_RULES: Rule[] = [
       "~/.claude/settings.json",
       "~/.codex/config.toml",
       "~/.omp/agent/config.yml",
+      "~/.omp/agent/tool-gate.json",
+      "~/.omp/agent/tool-gate.log",
       "~/.config/opencode/opencode.json",
     ],
     reason: "the agent would be changing its own permissions; edit the dotfiles repo instead",
@@ -298,23 +478,34 @@ export function loadConfig(agentDir: string, cwd: string): LoadedConfig {
   if (project) sources.push(projectPath);
   if (user) sources.push(userPath);
 
-  const projectRules = validateRules(project?.rules, projectPath, warnings);
+  // A project file can tighten policy but never loosen it: an agent may be able
+  // to write into the repository, so project settings must not disable the gate.
+  const projectRules = validateRules(project?.rules, projectPath, warnings).filter((rule) => {
+    if (rule.action === "allow") {
+      warnings.push(`${projectPath}: rule ${rule.id} ignored (project files cannot add allow rules)`);
+      return false;
+    }
+    return true;
+  });
   const userRules = validateRules(user?.rules, userPath, warnings);
-  const replaceDefaults = project?.replaceDefaults === true || user?.replaceDefaults === true;
+  const replaceDefaults = user?.replaceDefaults === true;
+  if (project?.replaceDefaults === true) {
+    warnings.push(`${projectPath}: replaceDefaults is user-only and was ignored`);
+  }
 
   const mode = ((): Mode => {
-    const candidate = project?.mode ?? user?.mode;
+    const candidate = user?.mode;
     if (typeof candidate === "string" && MODES.includes(candidate as Mode)) return candidate as Mode;
     return "enforce";
   })();
 
   const defaultAction = ((): Action => {
-    const candidate = project?.defaultAction ?? user?.defaultAction;
+    const candidate = user?.defaultAction;
     if (typeof candidate === "string" && ACTIONS.includes(candidate as Action)) return candidate as Action;
     return "allow";
   })();
 
-  const log = project?.log !== false && user?.log !== false;
+  const log = user?.log !== false;
 
   return {
     config: {

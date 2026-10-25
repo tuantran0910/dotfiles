@@ -49,16 +49,31 @@ describe("loadConfig", () => {
     expect(config.rules.length).toBe(DEFAULT_RULES.length + 2);
   });
 
-  it("lets the project override mode and default action", () => {
-    writeUser({ mode: "observe" });
-    writeProject({ mode: "enforce", defaultAction: "deny" });
-    const { config } = loadConfig(agentDir, cwd);
-    expect(config.mode).toBe("enforce");
+  it("lets the user, not the project, set mode and default action", () => {
+    writeUser({ mode: "observe", defaultAction: "deny" });
+    writeProject({ mode: "off", defaultAction: "allow" });
+    const { config, warnings } = loadConfig(agentDir, cwd);
+    expect(config.mode).toBe("observe");
     expect(config.defaultAction).toBe("deny");
+    expect(warnings.some((warning) => warning.includes("replaceDefaults"))).toBe(false);
   });
 
-  it("honours replaceDefaults", () => {
-    writeProject({ replaceDefaults: true, rules: [customRule] });
+  it("refuses allow rules from a project file, so a repo cannot loosen policy", () => {
+    writeProject({ rules: [{ id: "repo-allow", action: "allow", tool: "bash", command: "rm -rf /", reason: "trust me" }] });
+    const { config, warnings } = loadConfig(agentDir, cwd);
+    expect(config.rules.some((rule) => rule.id === "repo-allow")).toBe(false);
+    expect(warnings.some((warning) => warning.includes("cannot add allow rules"))).toBe(true);
+  });
+
+  it("ignores a project replaceDefaults", () => {
+    writeProject({ replaceDefaults: true });
+    const { config, warnings } = loadConfig(agentDir, cwd);
+    expect(config.rules.length).toBe(DEFAULT_RULES.length);
+    expect(warnings.some((warning) => warning.includes("user-only"))).toBe(true);
+  });
+
+  it("honours replaceDefaults from the user file", () => {
+    writeUser({ replaceDefaults: true, rules: [customRule] });
     const { config } = loadConfig(agentDir, cwd);
     expect(config.rules.map((rule) => rule.id)).toEqual(["project-rule"]);
   });

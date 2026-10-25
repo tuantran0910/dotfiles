@@ -48,9 +48,15 @@ re-reads config.
 
 Files, highest precedence first — first matching rule wins:
 
-1. `<project>/.omp/tool-gate.json`
+1. `<project>/.omp/tool-gate.json` — **may only tighten**
 2. `<agent dir>/tool-gate.json` (this machine: `~/.omp/agent/tool-gate.json`, tracked in dotfiles)
 3. the built-in defaults in `src/config.ts`
+
+A project file can add `deny`/`prompt` rules, but it cannot set `mode`,
+`defaultAction`, `log` or `replaceDefaults`, and its `allow` rules are dropped
+with a warning. An agent can often write into the repository it is working on, so
+a repository must never be able to switch the guard off — the same principle as
+Claude Code's "a deny rule can't be loosened by a more permissive project file".
 
 ```json
 {
@@ -99,6 +105,13 @@ never disappears because of a typo.
 | agent's own config | writes to `~/.claude/settings.json`, `~/.omp/agent/config.yml` | prompt |
 | infra | `sudo`, `docker system prune`, `kubectl delete ns`, `terraform destroy`, destructive SQL | prompt |
 | publishing | `npm/bun publish`, `cargo publish`, `twine upload`, history rewrite | prompt |
+| self-approval | `gh pr merge`, `gh pr review --approve` | deny |
+| credential printing | `gh auth token`, `printenv *TOKEN*` | prompt |
+| work loss | `git stash drop`/`clear` | prompt |
+| registry bypass | installs forced to `registry.npmjs.org` | prompt |
+| TLS / DNS | `curl --insecure`, `aws route53`, `certbot` | prompt |
+| unattended agents | `--dangerously-skip-permissions`, `--yes-always` | prompt |
+| CI / scratch | `gh workflow disable`, `rm -rf /tmp/*` | prompt |
 | templates | `**/.env.example`, `.env.sample` | allow |
 
 ## Audit
@@ -123,11 +136,40 @@ In `observe` mode the record carries `"wouldBe":"deny"`.
 - **No model in the loop.** Deterministic by design: no judge to bribe, no latency
   on every call, no false confidence.
 - **Session grants are memory-only.** A restart forgets them.
+- **Symlinks are followed** for path rules (a workspace symlink to
+  `~/.ssh/id_rsa` is still denied), including `~` resolved through
+  `/var` → `/private/var` on macOS.
+- **Policy tampering is prompted**, not silently allowed: rewriting
+  `tool-gate.json`/`.log` through bash hits `gate-tamper`.
 
 ## Development
 
 ```sh
 bun install
 bun run typecheck
-bun test --isolate     # 82 tests: matching, rules, config precedence, hook behaviour
+bun test --isolate     # 217 tests, including a 131-case adversarial corpus
 ```
+
+## How this compares to Claude Code's auto mode
+
+Claude Code's `auto` mode replaces *you* with a second model. Its decision order
+is: explicit allow/ask/deny rules first (critical-path `rm -rf /`/`~` removals are
+never auto-approved and no allow rule can override them), then read-only actions
+and in-workspace edits, then everything else goes to the classifier, and a
+classifier denial returns the matched rule name. The classifier sees your
+messages, the pending tool call and `CLAUDE.md`, but **not** tool results, so
+hostile file content cannot address it directly. If the server returns no verdict,
+the action is denied.
+
+| | Claude auto mode | tool-gate |
+| --- | --- | --- |
+| Decision maker | classifier model (Sonnet 5 by default) | regex/glob rules |
+| Latency/cost | a model round-trip per judged call | microseconds |
+| Novel situations | can reason about intent | miss unless a rule exists |
+| Determinism | same input, may differ by model/version | same input, same answer |
+| Injection resistance | tool results stripped; reviewed separately | no model to persuade |
+| Loosening by project file | deny rules always win | project files can only tighten |
+| Audit | transcript | JSONL, one line per decision |
+
+They compose: use omp's mode for per-tool prompting, then this plugin for
+argument-level rules that stay identical across models and sessions.
