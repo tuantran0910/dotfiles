@@ -568,7 +568,7 @@ export function loadConfig(agentDir: string, cwd: string): LoadedConfig {
         backend: value => value === "model" || value === "opencode-jev",
         model: value => typeof value === "string" && value.trim() !== "",
         timeoutMs: value => typeof value === "number" && Number.isFinite(value) && value >= 500 && value <= 120000,
-        maxPerSession: value => typeof value === "number" && Number.isSafeInteger(value) && value >= 0,
+        maxPerSession: value => typeof value === "number" && Number.isSafeInteger(value) && value >= -1,
         onError: value => value === "allow" || value === "deny",
         minAllowProbability: value => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1,
         fallbackModel: value => typeof value === "string" && value.trim() !== "",
@@ -583,8 +583,8 @@ export function loadConfig(agentDir: string, cwd: string): LoadedConfig {
       if (record["backend"] === "model" || record["backend"] === "opencode-jev") classifier.backend = record["backend"];
       if (typeof record["model"] === "string" && record["model"] !== "") classifier.model = record["model"];
       if (typeof record["timeoutMs"] === "number" && Number.isFinite(record["timeoutMs"]) && record["timeoutMs"] >= 500 && record["timeoutMs"] <= 120000) classifier.timeoutMs = record["timeoutMs"];
-      if (typeof record["maxPerSession"] === "number" && Number.isSafeInteger(record["maxPerSession"]) && record["maxPerSession"] >= 0) {
-        classifier.maxPerSession = record["maxPerSession"];
+      if (valid["maxPerSession"]!(record["maxPerSession"])) {
+        classifier.maxPerSession = record["maxPerSession"] as ClassifierConfig["maxPerSession"];
       }
       if (record["onError"] === "allow" || record["onError"] === "deny") classifier.onError = record["onError"];
       if (typeof record["minAllowProbability"] === "number" && valid["minAllowProbability"]!(record["minAllowProbability"])) classifier.minAllowProbability = record["minAllowProbability"];

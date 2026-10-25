@@ -35,7 +35,7 @@
     "fallbackModel": "@current",
     "minAllowProbability": 0.95,
     "timeoutMs": 15000,
-    "maxPerSession": 200,
+    "maxPerSession": -1,
     "onError": "deny"
   }
 }

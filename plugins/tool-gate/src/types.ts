@@ -27,7 +27,7 @@ export interface ClassifierConfig {
   /** Model spec/role alias for the model backend, or versioned Jev API model id. */
   model: string;
   timeoutMs: number;
-  /** Hard cap on classifier calls per session. */
+  /** Provider-attempt cap per session; -1 removes the cap. Zero permits no attempts. */
   maxPerSession: number;
   /** What to do when the classifier is unavailable, errors, times out, or answers garbage. */
   onError: "allow" | "deny";

@@ -123,7 +123,7 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
 
       const lines = [
         `tool-gate: ${loaded.config.mode} — ${loaded.config.rules.length} rules, default ${loaded.config.defaultAction}`,
-        `classifier: ${loaded.config.classifier.enabled ? `on (${loaded.config.classifier.backend ?? "model"}/${loaded.config.classifier.model}${loaded.config.classifier.fallbackModel ? `, fallback ${loaded.config.classifier.fallbackModel}` : ""}, ${classifierCalls}/${loaded.config.classifier.maxPerSession} calls, ${verdicts.size} cached)` : "off"}`,
+        `classifier: ${loaded.config.classifier.enabled ? `on (${loaded.config.classifier.backend ?? "model"}/${loaded.config.classifier.model}${loaded.config.classifier.fallbackModel ? `, fallback ${loaded.config.classifier.fallbackModel}` : ""}, ${classifierCalls}/${loaded.config.classifier.maxPerSession === -1 ? "unlimited" : loaded.config.classifier.maxPerSession} calls, ${verdicts.size} cached)` : "off"}`,
         `config: ${loaded.sources.length > 0 ? loaded.sources.join(", ") : "defaults only"}`,
         `audit: ${auditPath(agentDir)}`,
       ];
@@ -169,14 +169,14 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
           verdict = { action: "prompt", reason: "the complete call or user context exceeds the classifier review limit" };
         } else if (pending.has(key)) {
           verdict = (await pending.get(key)) ?? undefined;
-        } else if (classifierCalls >= classifier.maxPerSession) {
+        } else if (classifier.maxPerSession !== -1 && classifierCalls >= classifier.maxPerSession) {
           verdict = { action: classifier.onError, reason: "classifier budget exhausted for this session" };
         } else {
           classifierCalls += 1;
           const classify = options.classify ?? createGuardClassifier(pi, ctx, classifier, {
             reserveFallback: () => {
               if (callGeneration !== generation) return false;
-              if (classifierCalls >= classifier.maxPerSession) return false;
+              if (classifier.maxPerSession !== -1 && classifierCalls >= classifier.maxPerSession) return false;
               classifierCalls++;
               return true;
             },

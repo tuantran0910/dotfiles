@@ -63,7 +63,7 @@ fail-closed choice Claude Code documents.
   "fallbackModel": "@current",
   "minAllowProbability": 0.95,
   "timeoutMs": 15000,
-  "maxPerSession": 200,
+  "maxPerSession": -1,
   "onError": "deny"
 }
 ```
@@ -84,6 +84,15 @@ Jev gets up to three seconds (or half a shorter total timeout) when a fallback i
 configured. The fallback gets the remaining overall deadline. Each provider attempt
 counts against `maxPerSession`, including a fallback. With `onError: deny`, failure
 of both backends blocks the tool. Omitting `fallbackModel` disables failover.
+
+`maxPerSession: -1` removes the session attempt cap, as selected in the
+tracked policy. A nonnegative integer keeps a finite cap; `0` permits no provider
+attempts. The built-in default remains 200. Unlimited calls retain per-call
+deadlines, caching, all rules and fail-closed error handling. Fallback attempts
+can still consume the active model's paid/subscription allowance. With this code
+already loaded, `/tool-gate reload` applies a changed limit without resetting the
+usage counter; changing an exhausted finite limit to `-1` takes effect
+immediately.
 
 Classifier settings are user-only: a repository cannot enable, disable or soften it.
 Verdicts are keyed by the complete call, cwd, canonical file targets and user
