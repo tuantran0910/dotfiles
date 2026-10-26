@@ -284,3 +284,18 @@ describe("classifier outage", () => {
     expect(result?.reason).not.toContain("clarify authorization");
   });
 });
+
+describe("classifier outage with onError prompt", () => {
+  it("asks the user instead of blocking, and explains it is an outage", async () => {
+    let shown = "";
+    const h = gateHarness({ config: { classifier: { enabled: true, onError: "prompt", timeoutMs: 500, maxPerSession: -1 } }, classify: async () => null });
+    const result = await h.bash("cargo check", { hasUI: true, ui: { notify() {}, approve: async (request: { full: string }) => { shown = request.full; return "once"; } } });
+    expect(result).toBeUndefined();
+    expect(shown).toContain("unavailable");
+  });
+
+  it("still blocks without a UI", async () => {
+    const h = gateHarness({ config: { classifier: { enabled: true, onError: "prompt", timeoutMs: 500, maxPerSession: -1 } }, classify: async () => null });
+    expect((await h.bash("cargo check"))?.block).toBe(true);
+  });
+});

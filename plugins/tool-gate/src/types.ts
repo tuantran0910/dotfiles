@@ -30,7 +30,7 @@ export interface ClassifierConfig {
   /** Provider-attempt cap per session; -1 removes the cap. Zero permits no attempts. */
   maxPerSession: number;
   /** What to do when the classifier is unavailable, errors, times out, or answers garbage. */
-  onError: "allow" | "deny";
+  onError: "allow" | "deny" | "prompt";
   /** Jev allow probabilities below this threshold require confirmation. */
   minAllowProbability?: number;
   /** Optional model fallback for an unavailable Jev backend; @current follows the session model. */

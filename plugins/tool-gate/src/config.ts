@@ -569,7 +569,7 @@ export function loadConfig(agentDir: string, cwd: string): LoadedConfig {
         model: value => typeof value === "string" && value.trim() !== "",
         timeoutMs: value => typeof value === "number" && Number.isFinite(value) && value >= 500 && value <= 120000,
         maxPerSession: value => typeof value === "number" && Number.isSafeInteger(value) && value >= -1,
-        onError: value => value === "allow" || value === "deny",
+        onError: value => value === "allow" || value === "deny" || value === "prompt",
         minAllowProbability: value => typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1,
         fallbackModel: value => typeof value === "string" && value.trim() !== "",
       };
@@ -586,7 +586,7 @@ export function loadConfig(agentDir: string, cwd: string): LoadedConfig {
       if (valid["maxPerSession"]!(record["maxPerSession"])) {
         classifier.maxPerSession = record["maxPerSession"] as ClassifierConfig["maxPerSession"];
       }
-      if (record["onError"] === "allow" || record["onError"] === "deny") classifier.onError = record["onError"];
+      if (record["onError"] === "allow" || record["onError"] === "deny" || record["onError"] === "prompt") classifier.onError = record["onError"];
       if (typeof record["minAllowProbability"] === "number" && valid["minAllowProbability"]!(record["minAllowProbability"])) classifier.minAllowProbability = record["minAllowProbability"];
       if (typeof record["fallbackModel"] === "string" && record["fallbackModel"].trim() !== "") classifier.fallbackModel = record["fallbackModel"];
     }
