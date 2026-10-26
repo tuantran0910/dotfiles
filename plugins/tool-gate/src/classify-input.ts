@@ -20,7 +20,7 @@ const READ_ONLY_TOOLS = new Set(["read", "grep", "glob", "ls", "find", "search",
 
 /** First words of shell commands that only read. Programs with a pager,
  * preprocessor, compressor or output-file operand stay out on purpose. */
-const READ_ONLY_COMMANDS = new Set([
+export const READ_ONLY_COMMANDS = new Set([
   "ls", "cat", "head", "tail", "wc", "stat", "file", "du", "df",
   "pwd", "whoami", "date", "which", "type", "echo", "printf", "rg", "grep", "git",
   "jq", "tr", "cut", "diff", "comm", "realpath", "basename", "dirname", "find", "sed",
@@ -37,6 +37,9 @@ const FIND_READ_OPTIONS = new Set([
   "-print", "-print0", "-printf", "-ls", "-prune", "-quit", "-true", "-false",
   "-o", "-or", "-a", "-and", "-not",
 ]);
+
+/** Every program name the fast path can run, `cd` included. */
+export const FAST_PATH_PROGRAMS: ReadonlySet<string> = new Set([...READ_ONLY_COMMANDS, "cd"]);
 
 /** Flags that make a read-only-looking command write. */
 const MUTATING_FLAGS = /(?:^|\s)(?:--(?:in-place|output|fix|fix-only|pre|pre-glob|hostname-bin|ext-diff|textconv|run-tests|upload|set|date|compile))(?:\s|=|$)/;

@@ -19,6 +19,7 @@ import { homedir } from "node:os";
 import { appendAudit, auditPath } from "./audit.ts";
 import { heredocWrite, isReadOnlyCommand, needsClassification, readOnlyPaths } from "./classify-input.ts";
 import { dataBlankedCommand } from "./data-view.ts";
+import { shellStateChange } from "./shell-state.ts";
 import { buildClassifierPrompt, MAX_CLASSIFIER_ARGS, type ClassifyFn } from "./classifier.ts";
 import { AuthorizationContext } from "./authorization.ts";
 import { createGuardClassifier } from "./classifier-router.ts";
@@ -31,6 +32,7 @@ import type { Verdict } from "./verdict.ts";
 const MODES: Mode[] = ["off", "observe", "enforce"];
 const PLUGIN_VERSION = "0.3.10";
 const OVERSIZED_RULE = "oversized-command";
+const SHELL_STATE_RULE = "persistent-shell-change";
 
 export default function toolGate(pi: ExtensionAPI, options: { classify?: ClassifyFn } = {}): void {
   const agentDir = process.env["TOOL_GATE_STATE_DIR"] ?? getAgentDir();
@@ -39,6 +41,8 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
   const authorization = new AuthorizationContext();
   const verdicts = new Map<string, Verdict>();
   let classifierCalls = 0;
+  /** Set once an allowed call redefined commands in omp's persistent session shell. */
+  let shellRedefined = false;
   const pending = new Map<string, Promise<Verdict | null>>();
   const classifierAllowed = new Set<string>();
   let generation = 0;
@@ -83,6 +87,7 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
   function resetSession(): void {
     authorization.clear();
     classifierCalls = 0;
+    shellRedefined = false;
     modeOverride = null;
     reload(loadedCwd);
   }
@@ -168,6 +173,12 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
           : viewed;
       }
     }
+    // Redefining a fast-path program, a hook, a sensitive variable or a shell
+    // option changes what every later call runs; a person confirms it.
+    const shellChange = oversized || command === undefined ? null : shellStateChange(command);
+    if (shellChange === "redefines" && config.mode !== "off" && evaluated.action !== "deny" && !sessionAllowed.has(SHELL_STATE_RULE)) {
+      evaluated = { action: "prompt", ruleId: SHELL_STATE_RULE, reason: "this call changes the persistent session shell (functions, aliases, options or sensitive variables), so later commands may not run what they name", source: "rule" };
+    }
     if (!oversized && command !== undefined && isReadOnlyCommand(command)) {
       const fileDecision = evaluate(config, { ...call, tool: "read", input: { paths: readOnlyPaths(command) } }, sessionAllowed);
       const rank = { allow: 0, prompt: 1, deny: 2 };
@@ -192,7 +203,7 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
     const classifier = config.classifier;
     let classifierKey: string | undefined;
     let reviewedInstructions: string | undefined;
-    if (evaluated.source === "default" && classifier.enabled && needsClassification(event.toolName, input, { cwd: ctx.cwd, home })) {
+    if (evaluated.source === "default" && classifier.enabled && (needsClassification(event.toolName, input, { cwd: ctx.cwd, home }) || (shellRedefined && command !== undefined))) {
       const context = authorization.read(ctx.sessionManager);
       reviewedInstructions = JSON.stringify(context);
       const activeModel = classifier.model === "@current" || classifier.fallbackModel === "@current" ? ctx.models?.current?.() : undefined;
@@ -313,6 +324,7 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
       effective = "allow";
     }
 
+    if (shellChange !== null) shellRedefined = true;
     audit();
     return undefined;
   });
