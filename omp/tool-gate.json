@@ -36,6 +36,6 @@
     "minAllowProbability": 0.90,
     "timeoutMs": 15000,
     "maxPerSession": -1,
-    "onError": "deny"
+    "onError": "prompt"
   }
 }

@@ -165,6 +165,6 @@ describe("the tracked policy file", () => {
       "stop-herdr-server",
     ]);
     expect(config.mode).toBe("enforce");
-    expect(config.classifier).toMatchObject({ backend: "opencode-jev", model: "jev-1.13-free", fallbackModel: "@current", minAllowProbability: 0.9, maxPerSession: -1, onError: "deny" });
+    expect(config.classifier).toMatchObject({ backend: "opencode-jev", model: "jev-1.13-free", fallbackModel: "@current", minAllowProbability: 0.9, maxPerSession: -1, onError: "prompt" });
   });
 });
