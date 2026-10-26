@@ -18,6 +18,7 @@ import { homedir } from "node:os";
 
 import { appendAudit, auditPath } from "./audit.ts";
 import { heredocWrite, isReadOnlyCommand, needsClassification, readOnlyPaths } from "./classify-input.ts";
+import { dataBlankedCommand } from "./data-view.ts";
 import { buildClassifierPrompt, MAX_CLASSIFIER_ARGS, type ClassifyFn } from "./classifier.ts";
 import { AuthorizationContext } from "./authorization.ts";
 import { createGuardClassifier } from "./classifier-router.ts";
@@ -151,6 +152,22 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
     let evaluated: ReturnType<typeof evaluate> = oversized
       ? { action: "prompt", ruleId: OVERSIZED_RULE, reason: `the command is too long to evaluate (${command!.length} characters, limit ${MAX_CLASSIFIER_ARGS})`, source: "rule" }
       : evaluate(config, call, sessionAllowed);
+    // A rule that matched only a search pattern, a commit message or literal file
+    // content is not a verdict on what runs: the call takes the normal path, where
+    // only the fast path or the classifier can allow it. Without a classifier to
+    // review it, the rule stands.
+    let dataOnlyRule: string | undefined;
+    if (!oversized && command !== undefined && evaluated.source === "rule" && evaluated.action !== "allow" && config.classifier.enabled) {
+      const view = dataBlankedCommand(command);
+      const viewed = view === command ? evaluated : evaluate(config, { ...call, input: { ...input, command: view } }, sessionAllowed);
+      const rank = { allow: 0, prompt: 1, deny: 2 };
+      if (rank[viewed.action] < rank[evaluated.action]) {
+        dataOnlyRule = evaluated.ruleId;
+        evaluated = viewed.action === "allow"
+          ? { action: config.defaultAction, ruleId: "default", reason: `rule ${evaluated.ruleId} matched only data`, source: "default" }
+          : viewed;
+      }
+    }
     if (!oversized && command !== undefined && isReadOnlyCommand(command)) {
       const fileDecision = evaluate(config, { ...call, tool: "read", input: { paths: readOnlyPaths(command) } }, sessionAllowed);
       const rank = { allow: 0, prompt: 1, deny: 2 };
@@ -241,6 +258,7 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
         source,
         wouldBe: observed ? action : undefined,
         verdict: classifierVerdict,
+        dataOnlyRule,
         approval,
         reason: source === "default" ? undefined : reason,
         detail,

@@ -21,6 +21,8 @@ export interface AuditRecord {
   wouldBe?: string;
   /** The classifier's own answer, before any session approval or user prompt. */
   verdict?: string;
+  /** A rule that matched only data (a search pattern, message or file body). */
+  dataOnlyRule?: string;
   /** How the user answered a confirmation prompt. */
   approval?: "once" | "session" | "denied";
   /** Why the rule or classifier decided as it did. */
