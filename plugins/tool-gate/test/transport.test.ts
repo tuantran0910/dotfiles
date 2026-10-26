@@ -61,6 +61,43 @@ describe("classifier transport contract", () => {
     expect(warnings.join(" ")).toContain("output limit reached (output=300, reasoning=287)");
     expect(warnings.join(" ")).not.toContain("synthetic-sensitive-content");
   });
+  it("retries once after a malformed answer and logs its shape without content", async () => {
+    let calls = 0;
+    const { classify, warnings } = transport({ loadComplete: async () => async () => ++calls === 1
+      ? { stopReason: "stop", content: [{ type: "text", text: "synthetic-sensitive-content" }, { type: "toolCall", name: "verdict", arguments: { decision: "allow", reason: "x", note: "synthetic-sensitive-content" } }] }
+      : answer() });
+    expect((await classify(call, []))?.action).toBe("allow");
+    expect(calls).toBe(2);
+    const log = warnings.join(" ");
+    expect(log).toContain("invalid verdict schema");
+    expect(log).toContain("blocks=[text; toolCall:verdict{decision,reason,note} decision=allow reason=present]");
+    expect(log).toContain("retrying the classifier once");
+    expect(log).not.toContain("synthetic-sensitive-content");
+  });
+  it("retries at most once", async () => {
+    let calls = 0;
+    const { classify } = transport({ loadComplete: async () => async () => { calls++; return { stopReason: "stop", content: [{ type: "text", text: "{}" }] }; } });
+    expect(await classify(call, [])).toBeNull();
+    expect(calls).toBe(2);
+  });
+  for (const decision of ["deny", "prompt"]) {
+    it(`never retries a malformed ${decision}`, async () => {
+      let calls = 0;
+      const { classify } = transport({ loadComplete: async () => async () => ++calls === 1
+        ? { stopReason: "toolUse", content: [{ type: "toolCall", name: "verdict", arguments: { decision } }] }
+        : answer() });
+      expect(await classify(call, [])).toBeNull();
+      expect(calls).toBe(1);
+    });
+  }
+  it("does not retry truncated or failed answers", async () => {
+    for (const stopReason of ["length", "error", "aborted"]) {
+      let calls = 0;
+      const { classify } = transport({ loadComplete: async () => async () => { calls++; return { stopReason, content: [] }; } });
+      expect(await classify(call, [])).toBeNull();
+      expect(calls).toBe(1);
+    }
+  });
   it("loads the installed pi-ai completion function without making a model request", async () => {
     expect(typeof await loadCompleteSimple()).toBe("function");
   });

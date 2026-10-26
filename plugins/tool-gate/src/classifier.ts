@@ -189,18 +189,45 @@ export interface ClassifierRuntime {
   subprocess: typeof classifyInSubprocess;
 }
 
+/**
+ * The structure of a rejected answer, for the log: block types, tool names and
+ * argument keys, never their text. Names come from the model, so they are cut
+ * down to identifier characters.
+ */
+export function answerShape(message: unknown): string {
+  const clean = (value: unknown) => typeof value === "string" ? value.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 32) || "?" : typeof value;
+  const response = message as { stopReason?: unknown; content?: unknown } | null;
+  if (!response || typeof response !== "object") return `shape=${message === null ? "null" : typeof message}`;
+  const blocks = Array.isArray(response.content) ? response.content.map((block: any) => {
+    if (!block || typeof block !== "object") return typeof block;
+    if (block.type !== "toolCall") return clean(block.type);
+    const args = block.arguments;
+    const keys = args && typeof args === "object" && !Array.isArray(args) ? Object.keys(args).map(clean) : [Array.isArray(args) ? "array" : typeof args];
+    const decision = args?.decision;
+    const label = typeof decision === "string" && ["allow", "deny", "prompt"].includes(decision) ? decision : decision === undefined ? "none" : "other";
+    const reason = typeof args?.reason === "string" && args.reason.trim() !== "" ? "present" : "missing";
+    return `toolCall:${clean(block.name)}{${keys.join(",")}} decision=${label} reason=${reason}`;
+  }) : ["no-content"];
+  return `stop=${clean(response.stopReason)}, blocks=[${blocks.join("; ")}]`;
+}
+
 /** Builds a classifier bound to the live session context. */
 export function createClassifier(pi: ExtensionAPI, ctx: ClassifierContext, config: ClassifierConfig, runtime: ClassifierRuntime = { loadComplete: loadCompleteSimple, subprocess: classifyInSubprocess }): ClassifyFn {
   const fallbackSession = randomUUID();
-  const checkedVerdict = (message: unknown): Verdict | null => {
+  /** A verdict, or null; `retry` marks a completed answer that only broke the schema. */
+  const checkedVerdict = (message: unknown): { verdict: Verdict | null; retry: boolean } => {
     const verdict = parseVerdict(message);
-    if (verdict !== null) return verdict;
+    if (verdict !== null) return { verdict, retry: false };
     const response = message as { stopReason?: unknown; usage?: { output?: unknown; reasoningTokens?: unknown } } | null;
     const stop = response?.stopReason;
     const category = stop === "length" ? "output limit reached" : stop === "error" ? "provider error" : stop === "aborted" ? "request cancelled" : "invalid verdict schema";
     const count = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : "unknown";
-    pi.logger.warn(`tool-gate: no classifier verdict: ${category} (output=${count(response?.usage?.output)}, reasoning=${count(response?.usage?.reasoningTokens)})`);
-    return null;
+    const shape = category === "invalid verdict schema" ? `, ${answerShape(message)}` : "";
+    pi.logger.warn(`tool-gate: no classifier verdict: ${category} (output=${count(response?.usage?.output)}, reasoning=${count(response?.usage?.reasoningTokens)}${shape})`);
+    // A malformed answer that leaned towards deny or prompt is never retried: that would shop for an allow.
+    const content = (message as { content?: unknown } | null)?.content;
+    const cautious = Array.isArray(content) && content.some((block: any) => block?.type === "toolCall" && (block.arguments?.decision === "deny" || block.arguments?.decision === "prompt"));
+    return { verdict: null, retry: category === "invalid verdict schema" && !cautious };
   };
   return async (call, intent, parentSignal) => {
     const controller = new AbortController();
@@ -213,18 +240,19 @@ export function createClassifier(pi: ExtensionAPI, ctx: ClassifierContext, confi
       if (controller.signal.aborted) resolve(null);
       timer = setTimeout(() => { controller.abort(); resolve(null); }, config.timeoutMs);
     });
-    const run = async (): Promise<Verdict | null> => {
+    const attempt = async (): Promise<{ verdict: Verdict | null; retry: boolean }> => {
+      const none = { verdict: null, retry: false };
       // Only an explicit @current selector follows the session model. An
       // unresolved ordinary alias still fails closed rather than switching models.
       const model = config.model === "@current" ? ctx.models.current() : ctx.models.resolve(config.model);
       if (model === undefined || model === null) {
         pi.logger.warn(`tool-gate: classifier model "${config.model}" did not resolve`);
-        return null;
+        return none;
       }
 
       const sessionId = ctx.sessionManager?.getSessionId?.() || fallbackSession;
       const apiKey = await ctx.modelRegistry.getApiKey(model, sessionId, { signal: controller.signal });
-      if (controller.signal.aborted) return null;
+      if (controller.signal.aborted) return none;
       const { system, user } = buildClassifierPrompt(call, intent);
       const context = {
         systemPrompt: [system],
@@ -236,7 +264,7 @@ export function createClassifier(pi: ExtensionAPI, ctx: ClassifierContext, confi
       const debug = process.env["TOOL_GATE_DEBUG"] === "1";
 
       const complete = await runtime.loadComplete(debug ? (message) => pi.logger.info(message) : () => {});
-      if (controller.signal.aborted) return null;
+      if (controller.signal.aborted) return none;
       if (complete !== null) {
         try {
           const message = await complete(model, context, { ...options, signal: controller.signal });
@@ -246,15 +274,22 @@ export function createClassifier(pi: ExtensionAPI, ctx: ClassifierContext, confi
         }
       }
 
-      if (controller.signal.aborted) return null;
+      if (controller.signal.aborted) return none;
       try {
         const message = await runtime.subprocess({ model, context, options }, controller.signal, pluginDir);
         if (debug) pi.logger.info(`tool-gate: subprocess classifier answered ${message === null ? "nothing" : "a message"}`);
         return checkedVerdict(message);
       } catch {
         pi.logger.warn("tool-gate: subprocess classifier failed");
-        return null;
+        return none;
       }
+    };
+    const run = async (): Promise<Verdict | null> => {
+      const first = await attempt();
+      if (!first.retry || controller.signal.aborted) return first.verdict;
+      // Models occasionally answer beside the forced tool; one more try usually lands.
+      pi.logger.warn("tool-gate: retrying the classifier once after a malformed answer");
+      return (await attempt()).verdict;
     };
     try {
       return await Promise.race([run(), deadline]);

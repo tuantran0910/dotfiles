@@ -30,7 +30,7 @@ import type { Action, Mode } from "./types.ts";
 import type { Verdict } from "./verdict.ts";
 
 const MODES: Mode[] = ["off", "observe", "enforce"];
-const PLUGIN_VERSION = "0.3.12";
+const PLUGIN_VERSION = "0.3.13";
 const OVERSIZED_RULE = "oversized-command";
 const SHELL_STATE_RULE = "persistent-shell-change";
 

@@ -56,7 +56,10 @@ reasoning effort. Both inference and credential lookup receive the host session 
 A classifier answer is `allow`, `deny` or `prompt`. Jev supplies a typed Choice with
 validated probabilities; the model backend supplies one schema-valid `verdict`
 tool call with a reason. Free-text JSON, conflicting verdicts, and aborted
-or errored model completions are rejected. No answer (timeout, provider error,
+or errored model completions are rejected. A completed model answer that only
+breaks the schema is retried once within the same deadline, unless it leaned towards
+`deny` or `prompt`; the log records its shape (block types, tool name, argument
+keys), never its text. No answer (timeout, provider error,
 unparseable response, budget exhausted) becomes `onError` — **deny by default**, the same
 fail-closed choice Claude Code documents.
 
