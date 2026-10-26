@@ -97,7 +97,7 @@ export function createJevClassifier(
       }
       const response = await fetchImpl(JEV_ENDPOINT, {
         method: "POST", redirect: "error", signal: controller.signal,
-        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "User-Agent": "omp-tool-gate/0.3.10", "x-opencode-session": sessionId },
+        headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "User-Agent": "omp-tool-gate/0.3.11", "x-opencode-session": sessionId },
         body: JSON.stringify(payload),
       });
       if (!response.ok) {

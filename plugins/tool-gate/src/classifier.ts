@@ -98,6 +98,18 @@ export async function loadCompleteSimple(
   log: (message: string) => void = () => {},
 ): Promise<CompleteSimple | null> {
   if (cachedLoader !== undefined) return cachedLoader;
+  // omp's compiled binary only maps literal import specifiers in plugin source
+  // onto its bundled pi-ai; a marketplace plugin has no node_modules of its own.
+  try {
+    const module = (await import("@oh-my-pi/pi-ai")) as { completeSimple?: CompleteSimple };
+    if (typeof module.completeSimple === "function") {
+      log("tool-gate: completeSimple loaded from the host's pi-ai");
+      cachedLoader = module.completeSimple;
+      return cachedLoader;
+    }
+  } catch (error) {
+    log(`tool-gate: host pi-ai import failed: ${error instanceof Error ? error.message.slice(0, 80) : "error"}`);
+  }
   const candidates = completeSimpleCandidates();
   log(`tool-gate: probing ${candidates.length} completeSimple candidates (module dir ${import.meta.dir})`);
   for (const spec of candidates) {
