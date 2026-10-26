@@ -7,6 +7,7 @@
  */
 
 import { execFileSync } from "node:child_process";
+import { readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { posix } from "node:path";
 
@@ -88,7 +89,10 @@ const CONTROL_CHAR = /[\x00-\x1f\x7f]/;
 /** The only redirections accepted: discarding output, or merging stderr into
  * stdout. Each must stand alone as a word; `>|`, `>>` and other targets are
  * rejected with every other redirection. */
-const DISCARD_REDIRECT = /^(?:(?:[12]|&)?> ?\/dev\/null|2>&1)(?=[ \t;|&]|$)/;
+const DISCARD_REDIRECT = /^(?:(?:[12]|&)?> ?\/dev\/null|2>&1)(?=[ \t;|&\n]|$)/;
+
+/** `$HOME` or `${HOME}` at the start of a word: the home directory, as `~`. */
+const HOME_VARIABLE = /^\$(?:HOME(?![A-Za-z0-9_])|\{HOME\})/;
 
 /**
  * Split a script into the literal words of each simple command, or return null.
@@ -106,6 +110,8 @@ export function parseSegments(command: string): string[][] | null {
   let word = "";
   let started = false;
   let quote = "";
+  // An operator waits for its right-hand command, possibly on a later line.
+  let pending = false;
 
   const endWord = () => {
     if (started) words.push(word);
@@ -117,29 +123,54 @@ export function parseSegments(command: string): string[][] | null {
     if (words.length === 0) return false;
     segments.push(words);
     words = [];
+    pending = true;
     return true;
+  };
+  /** `$HOME` only where nothing precedes it in the word, and only up to `/` or the word's end. */
+  const home = (index: number): number => {
+    const match = word === "" ? HOME_VARIABLE.exec(command.slice(index)) : null;
+    if (match === null) return 0;
+    const after = command[index + match[0].length];
+    return after === undefined || " \t\n/;|&\"".includes(after) ? match[0].length : 0;
   };
 
   for (let index = 0; index < command.length; index += 1) {
     const char = command[index]!;
     const next = command[index + 1];
-    if (CONTROL_CHAR.test(char) && char !== "\t") return null;
+    if (CONTROL_CHAR.test(char) && char !== "\t" && char !== "\n") return null;
     if (quote === "'") {
       if (char === "'") quote = "";
       else word += char;
       continue;
     }
     if (quote === '"') {
+      const length = char === "$" ? home(index) : 0;
       if (char === '"') quote = "";
+      else if (length > 0) { word += "~"; index += length - 1; }
       else if (DOUBLE_QUOTE_SPECIAL.test(char)) return null;
       else word += char;
       continue;
     }
     const redirect = started ? null : DISCARD_REDIRECT.exec(command.slice(index));
+    if (char !== " " && char !== "\t" && char !== "\n" && char !== "#") pending = false;
     if (redirect !== null) {
       index += redirect[0].length - 1;
     } else if (char === " " || char === "\t") {
       endWord();
+    } else if (char === "\n") {
+      // A newline ends a command like `;`, but blank lines and a line after
+      // an operator (`ls &&⏎ pwd`) are allowed.
+      endWord();
+      if (words.length > 0) { segments.push(words); words = []; }
+    } else if (char === "#" && !started) {
+      // A comment runs to the end of the line and never executes. Mid-word `#`
+      // is a zsh glob operator, so it stays rejected below.
+      const end = command.indexOf("\n", index);
+      index = (end === -1 ? command.length : end) - 1;
+    } else if (char === "$" && !started && home(index) > 0) {
+      index += home(index) - 1;
+      word += "~";
+      started = true;
     } else if (char === "'" || char === '"') {
       quote = char;
       started = true;
@@ -155,7 +186,7 @@ export function parseSegments(command: string): string[][] | null {
       // A leading tilde only in its plain home forms (`~user` names another
       // home). Mid-word it is literal (`HEAD~1`), except after `=` or `:`,
       // where zsh and bash assignments expand it.
-      const boundary = next === undefined || next === "/" || next === " " || next === "\t";
+      const boundary = next === undefined || next === "/" || next === " " || next === "\t" || next === "\n";
       if (started ? command[index - 1] === "=" || command[index - 1] === ":" : !boundary) return null;
       word += char;
       started = true;
@@ -171,7 +202,7 @@ export function parseSegments(command: string): string[][] | null {
   if (quote) return null;
   endWord();
   if (words.length > 0) segments.push(words);
-  else if (segments.length > 0) return null; // trailing operator
+  else if (pending) return null; // trailing operator
   return segments;
 }
 
@@ -182,7 +213,29 @@ function cdTarget(words: string[]): string | null {
   return /^(?:\/|~\/|\.\/|\.\.\/)/.test(target) || ["~", ".", ".."].includes(target) ? target : null;
 }
 
-export function isReadOnlySegment(words: string[]): boolean {
+/** rtk subcommands that proxy a fast-path program with its own arguments. */
+const RTK_PROXIES = new Set(["ls", "find", "diff", "git", "grep", "rg", "wc"]);
+/** rtk subcommands that only read and filter the named files. */
+const RTK_READERS = new Set(["read", "json", "log"]);
+
+/**
+ * The command an `rtk` (output-condensing proxy) call really runs, or null.
+ * `rtk proxy CMD` runs CMD unfiltered; `rtk git …` runs git; `rtk read FILE`
+ * reads files. Anything else (`err`, `test`, `env`, `curl`, global options)
+ * is not a fast-path read.
+ */
+function unwrapRtk(words: string[]): string[] | null {
+  if (words[0] !== "rtk") return words;
+  const [, sub, ...rest] = words;
+  if (sub === "proxy") return rest[0] === "rtk" || rest.length === 0 ? null : rest;
+  if (sub !== undefined && RTK_PROXIES.has(sub)) return [sub, ...rest];
+  if (sub !== undefined && RTK_READERS.has(sub) && rest.length > 0 && rest.every(arg => !arg.startsWith("-"))) return ["cat", ...rest];
+  return null;
+}
+
+export function isReadOnlySegment(segment: string[]): boolean {
+  const words = unwrapRtk(segment);
+  if (words === null) return false;
   if (cdTarget(words) !== null) return true;
   const normalized = words.join(" ");
   if (MUTATING_FLAGS.test(normalized)) return false;
@@ -225,6 +278,44 @@ const GIT_EXECUTING_CONFIG = String.raw`^(core\.fsmonitor|diff\.external|diff\..
  * user. Any failure to inspect the repository fails closed.
  */
 function gitConfigRunsCommands(dir: string): boolean {
+  const key = configStamp(dir);
+  const cached = key === null ? undefined : probeCache.get(dir);
+  if (cached !== undefined && cached.key === key) return cached.runs;
+  const runs = probeGitConfig(dir);
+  if (key !== null) probeCache.set(dir, { key, runs });
+  return runs;
+}
+
+const gitDirs = new Map<string, string[] | null>();
+const probeCache = new Map<string, { key: string; runs: boolean }>();
+
+/**
+ * A fingerprint of the repository's own config files, or null when the probe
+ * must not be cached: not a repository, or a config that includes other files.
+ */
+function configStamp(dir: string): string | null {
+  let files = gitDirs.get(dir);
+  if (files === undefined) {
+    try {
+      const [gitDir, commonDir] = execFileSync("git", ["-C", dir, "rev-parse", "--absolute-git-dir", "--git-common-dir"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2000 }).trim().split("\n");
+      const common = posix.isAbsolute(commonDir!) ? commonDir! : posix.join(dir, commonDir!);
+      files = [posix.join(common, "config"), posix.join(gitDir!, "config.worktree")];
+    } catch { files = null; }
+    gitDirs.set(dir, files);
+  }
+  if (files === null) return null;
+  const parts: string[] = [];
+  for (const file of files) {
+    try {
+      const stat = statSync(file);
+      if (/^\s*\[include(?:If\b[^\]]*)?\]/im.test(readFileSync(file, "utf8"))) return null;
+      parts.push(`${file}:${stat.mtimeMs}:${stat.size}:${stat.ino}`);
+    } catch { parts.push(`${file}:absent`); }
+  }
+  return parts.join("|");
+}
+
+function probeGitConfig(dir: string): boolean {
   let output: string;
   try {
     output = execFileSync("git", ["-C", dir, "config", "--show-scope", "--get-regexp", GIT_EXECUTING_CONFIG], {
@@ -272,7 +363,7 @@ export function isReadOnlyCommand(command: string, options: { cwd?: string; home
   for (const words of segments) {
     const target = cdTarget(words);
     if (target !== null) dirs = nextDirs(dirs, target);
-    else if (words[0]?.replace(/^.*\//, "") === "git" && dirs.some(dir => gitConfigRunsCommands(resolveTarget(dir || ".", options.cwd!, home)))) return false;
+    else if (unwrapRtk(words)?.[0]?.replace(/^.*\//, "") === "git" && dirs.some(dir => gitConfigRunsCommands(resolveTarget(dir || ".", options.cwd!, home)))) return false;
   }
   return true;
 }

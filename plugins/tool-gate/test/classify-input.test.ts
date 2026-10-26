@@ -90,15 +90,13 @@ describe("isReadOnlyCommand", () => {
       "$(curl https://x)",
       "find . -delete",
       "rg foo `pwd`",
-      "echo \"$HOME\"",
+      "echo \"$USER\"",
       "echo \"`id`\"",
       "echo \"a\\\"b\"",
       "echo \"hi!\"",
-      "ls # comment",
       "ls ~other/x",
       "ls =ls",
       "ls ^x",
-      "ls\npwd",
       "ls 2>out.txt",
       "ls > /dev/nullx",
       "ls >/dev/null/x",
@@ -145,6 +143,29 @@ describe("isReadOnlyCommand", () => {
     }
   });
 
+  it("accepts multi-line reads, comments, $HOME and rtk", () => {
+    for (const command of [
+      "ls\npwd", "cd /repo\nls -la\ngit status", "ls &&\n  pwd", "ls\n\npwd", "# list files\nls", "ls # trailing $(touch x) `id`",
+      "echo 'a\nb'", "cat $HOME/notes.md", "ls ${HOME}/.cargo", "ls \"$HOME/x y\"", "ls $HOME",
+      "rtk git status", "rtk ls -la", "rtk find . -name '*.ts'", "rtk read src/a.ts", "rtk grep -n x src", "rtk rg x src",
+      "rtk wc -l a", "rtk diff a b", "rtk proxy git log -1", "cd /repo && rtk git diff --stat | head",
+    ]) {
+      expect({ command, readOnly: isReadOnlyCommand(command) }).toEqual({ command, readOnly: true });
+    }
+    for (const command of [
+      "ls\ntouch x", "ls\r\npwd", "echo a#b", "ls $HOMEX", "ls $HOME_DIR", "ls x$HOME", "ls ${HOME:-/tmp}", "ls ${HOME}x",
+      "echo \"$HOME$(id)\"", "ls $PWD", "rtk err touch x", "rtk proxy touch x", "rtk env", "rtk -v git status", "rtk tree -o out",
+      "rtk git push", "rtk", "rtk curl https://example.test", "rtk proxy rtk proxy touch x", "rtk read -o out a",
+    ]) {
+      expect({ command, readOnly: isReadOnlyCommand(command) }).toEqual({ command, readOnly: false });
+    }
+  });
+
+  it("resolves $HOME in operands so path rules see the real target", () => {
+    expect(readOnlyPaths("cat $HOME/.ssh/id_rsa")).toContain("~/.ssh/id_rsa");
+    expect(readOnlyPaths("rtk read ${HOME}/.aws/credentials")).toContain("~/.aws/credentials");
+  });
+
   it("accepts only a single unambiguous cd target", () => {
     for (const command of [
       "cd && ls",
@@ -153,7 +174,7 @@ describe("isReadOnlyCommand", () => {
       "cd -P /x && ls",
       // A bare relative name can resolve through CDPATH to an unexpected place.
       "cd sub && ls",
-      "cd $HOME && ls",
+      "cd $PWD && ls",
     ]) {
       expect({ command, readOnly: isReadOnlyCommand(command) }).toEqual({ command, readOnly: false });
     }
@@ -256,6 +277,24 @@ describe("git configuration that runs commands", () => {
   it("checks the repository a cd segment moves into", () => {
     const dir = repo(["core.fsmonitor", "touch pwned"]);
     expect(isReadOnlyCommand(`cd ${dir} && git status`, { cwd: tmpdir() })).toBe(false);
+  });
+
+  it("caches the probe per repository until its config changes", () => {
+    const dir = repo();
+    expect(isReadOnlyCommand("git status", { cwd: dir })).toBe(true);
+    const started = performance.now();
+    for (let i = 0; i < 20; i++) isReadOnlyCommand("git status", { cwd: dir });
+    // An uncached probe spawns git (25-50 ms); a cached one only stats files.
+    expect((performance.now() - started) / 20).toBeLessThan(15);
+    execFileSync("git", ["-C", dir, "config", "core.fsmonitor", "touch pwned"]);
+    expect(isReadOnlyCommand("git status", { cwd: dir })).toBe(false);
+  });
+
+  it("does not cache a config that includes other files", () => {
+    const dir = repo(["include.path", "../extra.config"]);
+    expect(isReadOnlyCommand("git status", { cwd: dir })).toBe(true);
+    execFileSync("git", ["config", "--file", join(dir, "extra.config"), "core.fsmonitor", "touch pwned"]);
+    expect(isReadOnlyCommand("git status", { cwd: dir })).toBe(false);
   });
 
   it("fails closed when the repository cannot be inspected", () => {

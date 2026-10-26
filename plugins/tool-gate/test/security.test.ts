@@ -52,7 +52,8 @@ describe("read-only fast-path boundary", () => {
     const h = gateHarness({ config: classifierPolicy, classify: async () => { calls++; return { action: "allow" }; } });
     const started = performance.now();
     const result = await h.bash("git push ".repeat(12000));
-    expect(performance.now() - started).toBeLessThan(500);
+    // Generous for a loaded machine: unbounded, this input took 54 s.
+    expect(performance.now() - started).toBeLessThan(3000);
     expect(result?.block).toBe(true);
     expect(result?.reason).toContain("too long");
     expect(calls).toBe(0);

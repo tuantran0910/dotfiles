@@ -4,7 +4,7 @@
  * a model.
  *
  *   bun scripts/evaluate-gate.ts [--sections accuracy,replay,fuzz,sandbox,perf] [--transcripts DIR ...]
- *                                [--fuzz N] [--sandbox N] [--output PATH]
+ *                                [--fuzz N] [--shell brush|zsh] [--sandbox N] [--output PATH]
  *
  * Sections
  *   accuracy   labelled fixtures through the real hook (test/fixtures/gate-evaluation.ts)
@@ -34,6 +34,8 @@ const options = (name: string) => args.flatMap((arg, index) => arg === name && a
 const FUZZ = Number(option("--fuzz") ?? 20000);
 const SANDBOX = Number(option("--sandbox") ?? 1500);
 const OUTPUT = option("--output");
+/** `brush` is omp's embedded shell (what agent bash calls run in); `zsh` the interactive one. */
+const SHELL = option("--shell") ?? "brush";
 const TRANSCRIPTS = options("--transcripts");
 if (TRANSCRIPTS.length === 0) TRANSCRIPTS.push(join(homedir(), ".claude/projects"), join(homedir(), ".omp/agent/sessions"));
 
@@ -243,6 +245,47 @@ function runOracle(probe: Probe, realBuiltins = false): Promise<Finding | null> 
   });
 }
 
+/**
+ * The same oracle against omp's embedded shell (pi-natives `Shell`), which is
+ * what actually runs agent bash calls. Stubs are bash functions; anything not
+ * stubbed fails with "command not found" because PATH is empty.
+ */
+async function runBrushOracle(probe: Probe, realBuiltins = false): Promise<Finding | null> {
+  const parsed = parseSegments(probe.command);
+  if (parsed === null) return null;
+  const { Shell } = await import("@oh-my-pi/pi-natives");
+  const segments = parsed.filter(words => !words[0]!.includes("/") && !(realBuiltins && BUILTINS.has(words[0]!)));
+  const root = mkdtempSync(join(tmpdir(), "tool-gate-brush-"));
+  const home = join(root, "home"); const work = join(root, "work"); const bin = join(root, "bin");
+  mkdirSync(home); mkdirSync(work); mkdirSync(bin);
+  const recordFile = join(root, "argv");
+  const stubs = STUBS.filter(name => !(realBuiltins && BUILTINS.has(name)));
+  // One write per record, so pipeline members cannot interleave.
+  const prelude = stubs.map(name => `${name}() { local r='${name}' a; for a in "$@"; do r="$r"$'\\x1f'"$a"; done; builtin printf '%s\\x1e' "$r" >> '${recordFile}'; return 0; }`).join("\n");
+  const shell = new Shell({ sessionEnv: { PATH: bin, HOME: home } });
+  const run = (command: string) => new Promise<string>(resolve => {
+    let out = "";
+    shell.run({ command, cwd: work, timeoutMs: 5000 }, (error: unknown, chunk: any) => { if (!error) out += typeof chunk === "string" ? chunk : chunk?.data ?? ""; })
+      .then(() => resolve(out), (error: unknown) => resolve(`ERROR ${error}`));
+  });
+  const preludeOut = await run(prelude);
+  if (preludeOut.trim() !== "") return { ...probe, problem: "oracle prelude failed", detail: preludeOut.slice(0, 200) };
+  const output = await run(probe.command);
+  const created = [...readdirSync(work), ...readdirSync(home), ...readdirSync(bin)];
+  if (/command not found/i.test(output)) return { ...probe, problem: "ran a program the parser did not see", detail: output.slice(0, 200) };
+  const records = existsSync(recordFile) ? readFileSync(recordFile, "utf8").split("\x1e").filter(Boolean) : [];
+  const expected = segments.map(words => words.map(word => word === "~" ? home : word.startsWith("~/") ? home + word.slice(1) : word).join("\x1f"));
+  const remaining = [...expected];
+  for (const record of records) {
+    const index = remaining.indexOf(record);
+    if (index === -1) return { ...probe, problem: "argv differs from the parser's words", detail: JSON.stringify({ shell: record.split("\x1f"), parser: expected.map(e => e.split("\x1f")) }) };
+    remaining.splice(index, 1);
+  }
+  if (created.length > 0) return { ...probe, problem: "created a file", detail: created.join(", ") };
+  if (records.length === 0 && segments.length > 0 && !realBuiltins) return { ...probe, problem: "the shell ran nothing although the parser accepted it", detail: output.slice(0, 200) };
+  return null;
+}
+
 async function pool<T, R>(items: T[], size: number, run: (item: T) => Promise<R>): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let next = 0;
@@ -254,9 +297,10 @@ async function pool<T, R>(items: T[], size: number, run: (item: T) => Promise<R>
 
 function generated(count: number, random: () => number): Probe[] {
   const pick = <T,>(list: T[]) => list[Math.floor(random() * list.length)]!;
-  const programs = [...STUBS, "sh", "touch", "eval", "exec", "rm", "xargs", "env", "command", "builtin", "source", ".", "nohup", "sort", "sed", "find", "awk", "python3", "zsh"];
+  const programs = [...STUBS, "rtk", "rtk proxy", "rtk read", "rtk git", "rtk err", "sh", "touch", "eval", "exec", "rm", "xargs", "env", "command", "builtin", "source", ".", "nohup", "sort", "sed", "find", "awk", "python3", "zsh"];
   const flags = ["-n", "-la", "-z", "-uz", "--pre=sh", "--pre", "-o", "-o out", "--output=out", "-i", "-c", "-e", "--upload-pa=sh", "--compress-program=sh", "-S", "-C", "-v", "--", "-", "-1", "--ext-diff", "--textconv", "-p"];
-  const words = ["file", "a.txt", "~/x", "~", "~root", "/etc/hosts", "'$HOME'", "\"$HOME\"", "\"a b\"", "'a;b'", "$IFS", "${x}", "$(id)", "`id`", "*", "?", "[a]", "{a,b}", "=ls", "^x", "#c", "!x", ".", "..", "./x", "\"`id`\"", "'it''s'", "\"\\\"\"", "a\\ b", "x=y", "status", "log", "diff", "show", "'\\x41'", " ", "；", "%x", "@x", "+x", ",x", ":x", "'argv[$(touch x)]'", "'a[$(touch x)]'", "'%d'", "'%*s'", "'%s'", "'%c'", "HEAD~1", "a=~/x", "-v", "-P", "+1"];
+  const words = ["file", "a.txt", "~/x", "~", "~root", "/etc/hosts", "'$HOME'", "\"$HOME\"", "\"a b\"", "'a;b'", "$IFS", "${x}", "$(id)", "`id`", "*", "?", "[a]", "{a,b}", "=ls", "^x", "#c", "!x", ".", "..", "./x", "\"`id`\"", "'it''s'", "\"\\\"\"", "a\\ b", "x=y", "status", "log", "diff", "show", "'\\x41'", " ", "；", "%x", "@x", "+x", ",x", ":x", "'argv[$(touch x)]'", "'a[$(touch x)]'", "'%d'", "'%*s'", "'%s'", "'%c'", "HEAD~1", "a=~/x", "-v", "-P", "+1",
+    "$HOME", "${HOME}", "\"$HOME/x\"", "$HOME/.ssh", "$HOMEX", "${HOME}x", "x$HOME", "${HOME:-/tmp}", "#", "# c $(touch x)", "a#b", "\\;", "\\|", "\\$HOME"];
   const operators = ["&&", "||", ";", "|", "&", "|&", ";;", ">", ">>", ">|", "<", "<<<", "2>/dev/null", "2>&1", "&>/dev/null", "> /dev/null", "2>x", "1>&2", ">/dev/nullx", "(", ")", "{", "}", "\n", "\r"];
   const joins = [" ", " ", " ", "", "\t", "  "];
   const out: Probe[] = [];
@@ -293,20 +337,21 @@ function mutated(seeds: string[], count: number, random: () => number): Probe[] 
 }
 
 async function fuzz() {
-  if (!existsSync("/bin/zsh")) { log("fuzz: skipped, /bin/zsh not found"); return; }
+  if (SHELL === "zsh" && !existsSync("/bin/zsh")) { log("fuzz: skipped, /bin/zsh not found"); return; }
   const random = prng(0x70019a7e);
   const seeds = [...GATE_EVALUATION.filter(c => c.expect.includes("fast") && c.command).map(c => c.command!), ...replayFast.slice(0, 500).map(e => e.command)];
   const probes = [...generated(Math.floor(FUZZ / 2), random), ...mutated(seeds, Math.ceil(FUZZ / 2), random)];
   const accepted = probes.filter(probe => isReadOnlyCommand(probe.command));
   const started = performance.now();
-  const stubbed = (await pool(accepted, 16, probe => runOracle(probe))).filter((finding): finding is Finding => finding !== null);
-  const builtins = (await pool(accepted, 16, probe => runOracle(probe, true))).filter((finding): finding is Finding => finding !== null)
+  const oracle = SHELL === "brush" ? runBrushOracle : runOracle;
+  const stubbed = (await pool(accepted, 16, probe => oracle(probe))).filter((finding): finding is Finding => finding !== null);
+  const builtins = (await pool(accepted, 16, probe => oracle(probe, true))).filter((finding): finding is Finding => finding !== null)
     .map(finding => ({ ...finding, problem: `real builtins: ${finding.problem}` }));
   // Repeat each finding once: pipelines race, so a lone argv mismatch may be ordering noise.
-  const confirmed = (await pool([...stubbed, ...builtins], 8, finding => runOracle(finding, finding.problem.startsWith("real builtins"))))
+  const confirmed = (await pool([...stubbed, ...builtins], 8, finding => oracle(finding, finding.problem.startsWith("real builtins"))))
     .filter((finding): finding is Finding => finding !== null);
-  report["fuzz"] = { generated: probes.length, acceptedByFastPath: accepted.length, executed: accepted.length * 2, findings: confirmed, seconds: round((performance.now() - started) / 1000) };
-  log(`fuzz: ${probes.length} probes, ${accepted.length} accepted by the fast path and executed under zsh stubs → ${confirmed.length} findings`);
+  report["fuzz"] = { shell: SHELL, generated: probes.length, acceptedByFastPath: accepted.length, executed: accepted.length * 2, findings: confirmed, seconds: round((performance.now() - started) / 1000) };
+  log(`fuzz: ${probes.length} probes, ${accepted.length} accepted by the fast path and executed under ${SHELL} stubs → ${confirmed.length} findings`);
   for (const finding of confirmed.slice(0, 20)) log(`  FINDING ${finding.problem}: ${JSON.stringify(finding.command)} ${finding.detail ?? ""}`);
 }
 
