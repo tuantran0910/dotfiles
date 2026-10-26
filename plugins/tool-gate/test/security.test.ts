@@ -272,3 +272,14 @@ describe("malformed policy files", () => {
     });
   }
 });
+
+describe("classifier outage", () => {
+  it("says the block is an outage, not a judgment of the content", async () => {
+    const h = gateHarness({ config: classifierPolicy, classify: async () => null });
+    const result = await h.bash("cargo check");
+    expect(result?.block).toBe(true);
+    expect(result?.reason).toContain("unavailable");
+    expect(result?.reason).toContain("not a judgment of this call");
+    expect(result?.reason).not.toContain("clarify authorization");
+  });
+});

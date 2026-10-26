@@ -198,6 +198,7 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
     let detail = evaluated.detail;
     let source: "rule" | "classifier" | "default" = evaluated.source;
     let classifierVerdict: Action | undefined;
+    let classifierUnavailable = false;
     let approval: "once" | "session" | "denied" | undefined;
 
     const classifier = config.classifier;
@@ -242,7 +243,8 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
           if (verdict && callGeneration === generation) verdicts.set(key, verdict);
         }
       }
-      verdict ??= { action: classifier.onError, reason: "no verdict from the classifier (unavailable, timeout or unparseable answer)" };
+      if (verdict === undefined) classifierUnavailable = true;
+      verdict ??= { action: classifier.onError, reason: "the classifier was unavailable (no verdict: outage, rate limit, timeout or unparseable answer)" };
       classifierVerdict = verdict.action;
       action = classifierAllowed.has(key) && verdict.action === "prompt" ? "allow" : verdict.action;
       ruleId = "classifier";
@@ -281,7 +283,9 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
       const authority = source === "classifier" ? "the classifier" : source === "default" ? "the default policy" : `rule "${ruleId}"`;
       const recovery = source === "rule"
         ? `Ask the user to run it themselves, or use /tool-gate allow ${ruleId} for this session.`
-        : source === "classifier" ? "Ask the user to clarify authorization, then retry." : "Correct the policy or ask the user to run it themselves.";
+        : source === "classifier" && classifierUnavailable
+          ? "This is not a judgment of this call's content: do not reword or split it, or switch tools to get around it. Retry the same call shortly, or ask the user to run it."
+          : source === "classifier" ? "Ask the user to clarify authorization, then retry." : "Correct the policy or ask the user to run it themselves.";
       return {
         block: true,
         reason: `tool-gate: blocked by ${authority} — ${reason}. ${recovery}`,
