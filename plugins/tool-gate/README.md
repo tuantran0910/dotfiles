@@ -35,7 +35,12 @@ executed"), which breaks automation without protecting it.
 ## Decision order
 
 1. **Rules** — deny → prompt → allow. Project → user → defaults breaks ties within an action. A prompt or session grant cannot mask another rule's denial.
-2. **Read-only fast path** — `read`/`grep`/`glob`, and literal shell reads like `ls`, `git status`, `rg`, `cat` skip the classifier. Literal shell operands also pass through file path policy. Interpreters, package runners, newlines, expansion, executable hooks, and mutating flags require classification.
+2. **Fast path** — these skip the classifier:
+   - `read`/`grep`/`glob`, session-only tools (`todo`, `ask`), and `task` (omp re-binds this extension in every subagent, so each subagent call is gated on its own, without a UI).
+   - Literal shell reads (`ls`, `cat`, `rg`, `grep`, `git status|diff|log|show`, `find` with selecting/printing primaries only, `sed -n N[,M]p`, `printf` with string conversions only), chained with `&&`, `||`, `;`, `|`, prefixed with `cd <absolute, ~/, ./ or ../ path>`, and discarding output with `2>/dev/null`, `>/dev/null`, `&>/dev/null` or `2>&1`. Every segment must be a read; operands of every segment and `cd` targets pass through file path policy. Routine local `git add` and `git commit` count as such segments too; `--no-verify`/`-n`, `git add -f`, interactive modes and `-c` overrides do not.
+   - `edit`/`write` whose plain `path` (and any patch `rename`) resolves, symlinks followed, inside the git worktree of cwd (or cwd), except files that run later on their own: `.git/`, `.github/`, `.gitlab-ci.yml`, `.husky/`, `.githooks/`, `.vscode/`, `.idea/`, `.claude/`, `.omp/`, `.agents/`, `.mcp.json`, `.gitmodules`, `.gitattributes`, `.pre-commit-config.yaml`, mise/asdf files, and any `.envrc` or `.npmrc`. Hashline `input` patches and `ast_edit` globs name targets this check cannot see, so they are classified. A literal heredoc write, `[cd DIR &&] cat > or >> FILE <<'EOF' … EOF` with a quoted delimiter and nothing after the terminator, is checked the same way, and file rules see its target.
+
+   Interpreters, package runners, newlines, expansion, globbing, other redirection, pagers, mutating flags, and git repositories whose local config runs a program (`core.fsmonitor`, diff/filter drivers, `gpg.program`) require classification.
 3. **Classifier** (optional) — only calls that matched no rule. It sees the complete arguments, canonical file targets, working directory, and retained user instructions. Tool results are excluded directly; hostile text can still reach it through proposed arguments.
 4. **Default action** — `allow` unless configured otherwise.
 
@@ -217,8 +222,12 @@ change the denying rule or explicitly replace defaults in trusted user config.
 details are redacted; this is a heuristic, not a guarantee that logs contain no secrets.
 
 ```json
-{"ts":"2026-10-25T08:00:00.000Z","tool":"bash","decision":"deny","ruleId":"rm-root","detail":"rm -rf /"}
+{"ts":"2026-10-25T08:00:00.000Z","tool":"bash","decision":"deny","ruleId":"rm-root","reason":"recursive delete of the filesystem root","detail":"rm -rf /"}
 ```
+
+Classifier decisions also carry `verdict` (the classifier's own answer) and, when
+the user was asked, `approval` (`once`, `session` or `denied`), so
+`jq 'select(.verdict == "prompt")'` lists every call that needed confirmation and why.
 
 In `observe` mode the record carries `"wouldBe":"deny"`.
 

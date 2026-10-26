@@ -98,7 +98,7 @@ describe("hook lifecycle and concurrency", () => {
   it("oversized calls require review without consulting a partial prompt", async () => {
     let calls = 0;
     const h = gateHarness({ config: classifierPolicy, classify: async () => { calls++; return { action: "allow" }; } });
-    expect((await h.call("write", { path: "output", content: "a".repeat(MAX_CLASSIFIER_ARGS + 1) }))?.block).toBe(true);
+    expect((await h.call("write", { path: "../output", content: "a".repeat(MAX_CLASSIFIER_ARGS + 1) }))?.block).toBe(true);
     expect(calls).toBe(0);
   });
   it("retargeting a file-tool symlink invalidates the cached verdict", async () => {

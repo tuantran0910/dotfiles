@@ -20,6 +20,9 @@ describe("read-only fast-path boundary", () => {
     "/tmp/ls -la", "jq --run-tests tests.jq", "date -s 2026-01-01", "ls -la\r\ntouch unrelated",
     "sort '-o' output input", "rg '--pre=task.sh' pattern .", "cat 'unterminated", "file -C",
     "cat ~/alias/*", "echo\u00a0task",
+    "ls && touch build", "cat notes.txt | xargs touch", "cd sub && cat notes.txt", "uniq a.txt out.txt",
+    "sort --compress-program=sh x", "bat --paging=always --pager=sh x", "ag --pager sh foo",
+    "ack --pager=sh foo", "rg -z foo",
   ];
   for (const command of executable) {
     it(`classifies executable or mutating input: ${JSON.stringify(command)}`, async () => {
@@ -30,7 +33,41 @@ describe("read-only fast-path boundary", () => {
       expect(calls).toBe(1);
     });
   }
-  for (const command of ["git status", "git diff --stat", "git log --oneline -5", "rg TODO src", "ls -la", "cat README.md", "jq . package.json"]) {
+  it("keeps session-only agent tools away from the classifier", async () => {
+    let calls = 0;
+    const h = gateHarness({ config: classifierPolicy, classify: async () => { calls++; return { action: "deny" }; } });
+    expect(await h.call("todo", { list: [{ content: "read schema", status: "pending" }] })).toBeUndefined();
+    expect(await h.call("ask", { question: "which branch?" })).toBeUndefined();
+    expect(calls).toBe(0);
+  });
+  it("records why the classifier asked and how the user answered", async () => {
+    const h = gateHarness({ config: classifierPolicy, classify: async () => ({ action: "prompt", reason: "Jev allow probability 0.910 is below 0.95; confirmation required" }) });
+    expect(await h.bash("touch out.txt", { hasUI: true, ui: { approve: async () => "once" } })).toBeUndefined();
+    const record = h.audit().at(-1);
+    expect(record).toMatchObject({ decision: "allow", source: "classifier", verdict: "prompt", approval: "once" });
+    expect(record.reason).toContain("0.910");
+  });
+  it("asks about an oversized command without running backtracking-prone rule regexes", async () => {
+    let calls = 0;
+    const h = gateHarness({ config: classifierPolicy, classify: async () => { calls++; return { action: "allow" }; } });
+    const started = performance.now();
+    const result = await h.bash("git push ".repeat(12000));
+    expect(performance.now() - started).toBeLessThan(500);
+    expect(result?.block).toBe(true);
+    expect(result?.reason).toContain("too long");
+    expect(calls).toBe(0);
+  });
+  it("checks file rules against paths reached through cd", async () => {
+    let calls = 0;
+    const h = gateHarness({ config: classifierPolicy, classify: async () => { calls++; return { action: "allow" }; } });
+    expect((await h.bash("cd ~/.ssh && head config"))?.block).toBe(true);
+    expect(calls).toBe(0);
+  });
+  for (const command of [
+    "git status", "git diff --stat", "git log --oneline -5", "rg TODO src", "ls -la", "cat README.md", "jq . package.json",
+    "cd /tmp && grep -n 'pub struct\\|pub fn' lib.rs | head -40 && echo '--- sizes ---' && wc -l lib.rs",
+    "cd /tmp && ls src | head -40 && echo '--- routes ---' && grep -n 'tables' routes.tsx | head -20",
+  ]) {
     it(`keeps ordinary reads fast: ${command}`, async () => {
       let calls = 0;
       const h = gateHarness({ config: classifierPolicy, classify: async () => { calls++; return { action: "deny" }; } });

@@ -1,6 +1,6 @@
 {
   "name": "tool-gate",
-  "version": "0.3.9",
+  "version": "0.3.10",
   "description": "Argument-level permission policy for omp tool calls: bash command patterns and protected paths, with a deterministic decision and an audit log.",
   "private": true,
   "omp": {
@@ -11,7 +11,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun test --isolate",
-    "eval:jev": "bun scripts/evaluate-jev.ts"
+    "eval:jev": "bun scripts/evaluate-jev.ts",
+    "eval:gate": "bun scripts/evaluate-gate.ts"
   },
   "devDependencies": {
     "@oh-my-pi/pi-coding-agent": "^18.1.14",

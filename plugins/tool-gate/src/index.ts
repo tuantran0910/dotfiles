@@ -17,8 +17,8 @@ import { getAgentDir } from "@oh-my-pi/pi-coding-agent";
 import { homedir } from "node:os";
 
 import { appendAudit, auditPath } from "./audit.ts";
-import { isReadOnlyCommand, needsClassification, readOnlyPaths } from "./classify-input.ts";
-import { buildClassifierPrompt, type ClassifyFn } from "./classifier.ts";
+import { heredocWrite, isReadOnlyCommand, needsClassification, readOnlyPaths } from "./classify-input.ts";
+import { buildClassifierPrompt, MAX_CLASSIFIER_ARGS, type ClassifyFn } from "./classifier.ts";
 import { AuthorizationContext } from "./authorization.ts";
 import { createGuardClassifier } from "./classifier-router.ts";
 import { loadConfig } from "./config.ts";
@@ -28,7 +28,8 @@ import type { Action, Mode } from "./types.ts";
 import type { Verdict } from "./verdict.ts";
 
 const MODES: Mode[] = ["off", "observe", "enforce"];
-const PLUGIN_VERSION = "0.3.9";
+const PLUGIN_VERSION = "0.3.10";
+const OVERSIZED_RULE = "oversized-command";
 
 export default function toolGate(pi: ExtensionAPI, options: { classify?: ClassifyFn } = {}): void {
   const agentDir = process.env["TOOL_GATE_STATE_DIR"] ?? getAgentDir();
@@ -143,9 +144,22 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
     const input = (event.input ?? {}) as Record<string, unknown>;
     const resolvedPaths = extractPaths(input).map(path => canonicalTarget(resolveTarget(path, ctx.cwd, home)));
     const call = { tool: event.toolName, input, cwd: ctx.cwd, home, resolvedPaths };
-    let evaluated = evaluate(config, call, sessionAllowed);
-    if (event.toolName === "bash" && typeof input["command"] === "string" && isReadOnlyCommand(input["command"])) {
-      const fileDecision = evaluate(config, { ...call, tool: "read", input: { paths: readOnlyPaths(input["command"]) } }, sessionAllowed);
+    const command = event.toolName === "bash" && typeof input["command"] === "string" ? input["command"] : undefined;
+    // Rule regexes such as `\bgit\s+push\b[^\n]*…` backtrack quadratically; a
+    // command past the classifier's own limit is confirmed by a person instead.
+    const oversized = config.mode !== "off" && command !== undefined && command.length > MAX_CLASSIFIER_ARGS;
+    let evaluated: ReturnType<typeof evaluate> = oversized
+      ? { action: "prompt", ruleId: OVERSIZED_RULE, reason: `the command is too long to evaluate (${command!.length} characters, limit ${MAX_CLASSIFIER_ARGS})`, source: "rule" }
+      : evaluate(config, call, sessionAllowed);
+    if (!oversized && command !== undefined && isReadOnlyCommand(command)) {
+      const fileDecision = evaluate(config, { ...call, tool: "read", input: { paths: readOnlyPaths(command) } }, sessionAllowed);
+      const rank = { allow: 0, prompt: 1, deny: 2 };
+      if (fileDecision.source === "rule" && rank[fileDecision.action] > rank[evaluated.action]) evaluated = fileDecision;
+    }
+    // A literal heredoc write meets the same file rules as the write tool.
+    const heredoc = oversized || command === undefined ? null : heredocWrite(command);
+    if (heredoc !== null) {
+      const fileDecision = evaluate(config, { ...call, tool: "write", input: { path: heredoc.path } }, sessionAllowed);
       const rank = { allow: 0, prompt: 1, deny: 2 };
       if (fileDecision.source === "rule" && rank[fileDecision.action] > rank[evaluated.action]) evaluated = fileDecision;
     }
@@ -155,11 +169,13 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
     let reason = evaluated.reason;
     let detail = evaluated.detail;
     let source: "rule" | "classifier" | "default" = evaluated.source;
+    let classifierVerdict: Action | undefined;
+    let approval: "once" | "session" | "denied" | undefined;
 
     const classifier = config.classifier;
     let classifierKey: string | undefined;
     let reviewedInstructions: string | undefined;
-    if (evaluated.source === "default" && classifier.enabled && needsClassification(event.toolName, input)) {
+    if (evaluated.source === "default" && classifier.enabled && needsClassification(event.toolName, input, { cwd: ctx.cwd, home })) {
       const context = authorization.read(ctx.sessionManager);
       reviewedInstructions = JSON.stringify(context);
       const activeModel = classifier.model === "@current" || classifier.fallbackModel === "@current" ? ctx.models?.current?.() : undefined;
@@ -199,6 +215,7 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
         }
       }
       verdict ??= { action: classifier.onError, reason: "no verdict from the classifier (unavailable, timeout or unparseable answer)" };
+      classifierVerdict = verdict.action;
       action = classifierAllowed.has(key) && verdict.action === "prompt" ? "allow" : verdict.action;
       ruleId = "classifier";
       reason = verdict.reason ?? "classifier decision";
@@ -223,6 +240,9 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
         ruleId,
         source,
         wouldBe: observed ? action : undefined,
+        verdict: classifierVerdict,
+        approval,
+        reason: source === "default" ? undefined : reason,
         detail,
       });
     };
@@ -255,15 +275,18 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
         answer = await approve({
           full: `tool-gate wants confirmation for ${event.toolName}\n\n${source === "classifier" ? "Classifier" : `Rule: ${ruleId}`}\n${reason}\n\nArguments:\n${JSON.stringify(input, null, 2)}`,
           compact: `${event.toolName}: ${source === "classifier" ? "classifier" : ruleId}`,
-          session: classifierKey ? "Allow this exact call for this session" : source === "rule" ? `Allow ${ruleId} for this session` : undefined,
+          // An oversized command skipped every rule, so it is never granted for the session.
+          session: classifierKey ? "Allow this exact call for this session" : source === "rule" && ruleId !== OVERSIZED_RULE ? `Allow ${ruleId} for this session` : undefined,
         });
       } catch { answer = "deny"; }
 
       if ((answer !== "once" && answer !== "session") || callGeneration !== generation || (reviewedInstructions !== undefined && reviewedInstructions !== JSON.stringify(authorization.read(ctx.sessionManager)))) {
         effective = "deny";
+        approval = "denied";
         audit();
         return { block: true, reason: `tool-gate: the user denied this call (${ruleId}).` };
       }
+      approval = answer;
       if (answer === "session") {
         if (classifierKey) classifierAllowed.add(classifierKey);
         else sessionAllowed.add(ruleId);

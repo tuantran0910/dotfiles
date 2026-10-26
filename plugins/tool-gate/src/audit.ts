@@ -19,6 +19,12 @@ export interface AuditRecord {
   /** Where the decision came from: a rule, the classifier, or the default action. */
   source?: "rule" | "classifier" | "default";
   wouldBe?: string;
+  /** The classifier's own answer, before any session approval or user prompt. */
+  verdict?: string;
+  /** How the user answered a confirmation prompt. */
+  approval?: "once" | "session" | "denied";
+  /** Why the rule or classifier decided as it did. */
+  reason?: string;
   detail?: string;
 }
 
@@ -36,8 +42,8 @@ export function appendAudit(agentDir: string, record: AuditRecord): void {
     }
     // Never echo likely live credentials into a second, persistent transcript.
     const sensitive = /(?:authorization|bearer|token|password|secret|api[_-]?key|credential)|:\/\/[^\s/]+:[^\s/@]+@/i;
-    const detail = record.detail && sensitive.test(record.detail) ? "[redacted: credential-bearing arguments]" : record.detail;
-    const line = JSON.stringify({ ts: new Date().toISOString(), ...record, detail });
+    const redact = (text?: string) => text && sensitive.test(text) ? "[redacted: credential-bearing arguments]" : text;
+    const line = JSON.stringify({ ts: new Date().toISOString(), ...record, reason: redact(record.reason), detail: redact(record.detail) });
     const fd = openSync(path, constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
     try {
       if (fstatSync(fd).isFile()) {
