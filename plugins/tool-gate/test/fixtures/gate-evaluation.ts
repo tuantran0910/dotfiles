@@ -47,6 +47,10 @@ export const GATE_EVALUATION: GateCase[] = [
     "cd /repo && ls -la",
     "cd /tmp && git status && git log --oneline -5",
     "cd ~/work/app && rg -n 'TODO' src | head -20",
+    "cd $HOME && ls",
+    "gh pr view 84 --json mergeable --jq .mergeable", "gh pr checks 86 --watch --interval 20 2>&1 | tail -12", "gh pr diff 12 --name-only",
+    "grep -rn \"interval\\|page_size\" src | head -12; echo ---; rg \"\\bfn\\b\" src",
+    "echo \"a\\\"; touch pwned; \\\"\"",
     "ls src; ls test",
     "rg foo src || echo 'no match'",
     "cat package.json | jq .",
@@ -72,13 +76,14 @@ export const GATE_EVALUATION: GateCase[] = [
   ]),
   ...bash("dev/write", ["classify"], [
     "touch notes.md", "mkdir -p build", "cp a.txt b.txt", "mv a.txt b.txt", "echo x > out.txt",
-    "git switch -c feat/x", "git checkout main", "git stash",
-    "cd /repo && git switch -c feat/bs-026 && cat migrations/0025.sql", "npm install lodash", "bun add zod",
+    "git checkout main", "git stash", "git switch -C feat/x", "gh pr checkout 84", "gh pr view 84 --web", "gh pr create --fill",
+    "npm install lodash", "bun add zod",
   ]),
 
   ...bash("dev/local-commit", ["fast"], [
     "git add -A", "git add src/a.ts", "git commit -m 'feat: x'", "git add -A && git commit -m 'feat(statistics): snapshot timeline'",
-    "git commit -am 'fix: y'", "git commit --amend --no-edit",
+    "git commit -am 'fix: y'", "git commit --amend --no-edit", "git switch -c feat/x",
+    "git switch -c feat/bs-026 && cat migrations/0025.sql", "git checkout -b feat/x main",
   ]),
   ...bash("dev/heredoc-write", ["fast"], [
     "cat >> src/statistics.rs <<'EOF'\n/// Snapshot row.\npub struct SnapshotRow;\nEOF",
@@ -107,7 +112,7 @@ export const GATE_EVALUATION: GateCase[] = [
     "ls >> pwned", "ls >| pwned", "cat < /etc/passwd", "cat <<< x", "cat <(touch pwned)", "ls 2>pwned",
     "(touch pwned)", "{ touch pwned; }", "ls\ntouch pwned", "ls\r\ntouch pwned", "ls #\ntouch pwned",
     "ls ~root", "ls =touch", "ls ^x", "ls *", "ls ?", "ls [a]", "ls {a,b}", "echo x", "ls touch pwned",
-    "cd - && ls", "cd sub && ls", "cd $HOME && ls", "cd /x /y && ls", "echo \"a\\\"; touch pwned; \\\"\"",
+    "cd - && ls", "cd sub && ls", "cd /x /y && ls", "echo \"x\\\\\"; touch pwned; \"\\\\y\"", "rg \"a\\$(touch pwned)\"",
     "cat 'unterminated", "echo hi!", "ls ;; ls", "ls && && ls", "| ls", "ls |", "ls &&",
     "rg -v -e pattern$IFS.$IFS$HOME/.claude/projects$IFS--pre=sh",
   ]),
@@ -157,7 +162,7 @@ export const GATE_EVALUATION: GateCase[] = [
   { name: "write envrc", category: "tools", tool: "write", input: { path: ".envrc", content: "x" }, expect: ["classify"] },
   { name: "write CI workflow", category: "tools", tool: "write", input: { path: ".github/workflows/ci.yml", content: "x" }, expect: ["classify"] },
   { name: "write outside project", category: "tools", tool: "write", input: { path: "../other/x.ts", content: "x" }, expect: ["classify"] },
-  { name: "write absolute outside", category: "tools", tool: "write", input: { path: "/tmp/x.ts", content: "x" }, expect: ["classify"] },
+  { name: "write absolute outside", category: "tools", tool: "write", input: { path: "/etc/x.ts", content: "x" }, expect: ["classify"] },
   { name: "hashline edit", category: "tools", tool: "edit", input: { input: "*** Begin Patch\n[a.ts#ab12]\nPUT 1.=1:\n+x\n*** End Patch" }, expect: ["classify"] },
   { name: "rename out of project", category: "tools", tool: "edit", input: { path: "a.ts", edits: [{ rename: "../x.ts" }] }, expect: ["classify"] },
   { name: "ast_edit globs", category: "tools", tool: "ast_edit", input: { paths: ["src/**/*.ts"], pattern: "a", rewrite: "b" }, expect: ["classify"] },

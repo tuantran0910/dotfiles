@@ -7,10 +7,15 @@
  * runs later on its own: git internals and hooks, CI, editor tasks, agent
  * settings, direnv/mise, package-manager config. Those stay with the classifier,
  * as does every target outside the project or behind a symlink that leaves it.
+ *
+ * The system temp directories count too: agents stage commit messages, PR
+ * bodies and review notes there. Nothing in them runs on its own, but a repo
+ * can be cloned there, so the sensitive names apply at any depth.
  */
 
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { relative } from "node:path";
 
 import { canonicalTarget, resolveTarget } from "./match.ts";
@@ -32,6 +37,28 @@ const SENSITIVE = [
 ];
 
 const roots = new Map<string, string>();
+
+/** Canonical system temp directories (`/tmp` and `$TMPDIR`). */
+export function scratchRoots(): string[] {
+  const found = new Set<string>();
+  for (const dir of ["/tmp", tmpdir()]) {
+    try { found.add(realpathSync(dir)); } catch { /* absent on this system */ }
+  }
+  return [...found];
+}
+
+let defaultScratch = scratchRoots();
+
+/** Replace the temp directories; tests whose fixtures live in temp pass []. */
+export function useScratchRoots(dirs: string[]): void { defaultScratch = dirs; }
+
+/** Is a path relative to `root` an ordinary file inside it? */
+function within(root: string, target: string): string | null {
+  const inside = relative(root, target);
+  return inside === "" || inside.startsWith("..") || inside.startsWith("/") ? null : inside.toLowerCase();
+}
+
+const isSensitive = (key: string) => SENSITIVE.some(pattern => pattern.test(key));
 
 /** The git worktree containing cwd, or cwd when there is none. */
 function projectRoot(cwd: string): string {
@@ -66,16 +93,22 @@ function targets(tool: string, input: Record<string, unknown>): string[] | null 
   return found;
 }
 
-/** True when every target of an edit/write is an ordinary file of the project. */
-export function isWorkspaceEdit(tool: string, input: Record<string, unknown>, cwd: string, home: string): boolean {
+/** True when every target of an edit/write is an ordinary file of the project or a temp directory. */
+export function isWorkspaceEdit(tool: string, input: Record<string, unknown>, cwd: string, home: string, scratch: string[] = defaultScratch): boolean {
   const paths = targets(tool, input);
   if (paths === null) return false;
   const root = projectRoot(cwd);
   return paths.every(path => {
-    const inside = relative(root, canonicalTarget(resolveTarget(path, cwd, home)));
-    if (inside === "" || inside.startsWith("..") || inside.startsWith("/")) return false;
+    const target = canonicalTarget(resolveTarget(path, cwd, home));
     // macOS volumes are case-insensitive: `.GIT/config` is `.git/config`.
-    const key = inside.toLowerCase();
-    return !SENSITIVE.some(pattern => pattern.test(key));
+    const key = within(root, target);
+    if (key !== null) return !isSensitive(key);
+    return scratch.some(dir => {
+      const rest = within(dir, target);
+      if (rest === null) return false;
+      // Every suffix from a directory boundary: `repo/.github/x` is still CI config.
+      const parts = rest.split("/");
+      return !parts.some((_, at) => isSensitive(parts.slice(at).join("/")));
+    });
   });
 }

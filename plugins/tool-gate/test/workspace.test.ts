@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { heredocWrite, needsClassification } from "../src/classify-input.ts";
-import { isWorkspaceEdit } from "../src/workspace.ts";
+import { isWorkspaceEdit, scratchRoots } from "../src/workspace.ts";
 import { classifierPolicy, gateHarness } from "./harness.ts";
 
 function project() {
@@ -23,7 +23,7 @@ const edit = (path: string) => ({ path, old_string: "a", new_string: "b" });
 
 describe("isWorkspaceEdit", () => {
   const { repo, outside, cwd, home } = project();
-  const check = (tool: string, input: Record<string, unknown>) => isWorkspaceEdit(tool, input, cwd, home);
+  const check = (tool: string, input: Record<string, unknown>) => isWorkspaceEdit(tool, input, cwd, home, []);
 
   it("accepts ordinary edits and writes anywhere in the repository", () => {
     expect(check("edit", edit("a.ts"))).toBe(true);
@@ -60,8 +60,28 @@ describe("isWorkspaceEdit", () => {
 
   it("uses the working directory as the project outside a repository", () => {
     const plain = realpathSync(mkdtempSync(join(tmpdir(), "tool-gate-plain-")));
-    expect(isWorkspaceEdit("edit", edit("a.ts"), plain, home)).toBe(true);
-    expect(isWorkspaceEdit("edit", edit("../a.ts"), plain, home)).toBe(false);
+    expect(isWorkspaceEdit("edit", edit("a.ts"), plain, home, [])).toBe(true);
+    expect(isWorkspaceEdit("edit", edit("../a.ts"), plain, home, [])).toBe(false);
+  });
+
+  it("accepts ordinary files in a temp directory, minus sensitive names at any depth", () => {
+    const { root, outside } = project();
+    const scratch = join(root, "tmp");
+    mkdirSync(scratch);
+    symlinkSync(outside, join(scratch, "link"));
+    const tmp = (path: string) => isWorkspaceEdit("write", { path: join(scratch, path), content: "x" }, cwd, home, [scratch]);
+    expect(tmp("commit_msg.txt")).toBe(true);
+    expect(tmp("bs027/pr-body.md")).toBe(true);
+    expect(tmp("link/x.txt")).toBe(false);
+    for (const path of ["clone/.git/hooks/pre-commit", "clone/.github/workflows/ci.yml", "clone/.envrc", "clone/.claude/settings.json", ".npmrc", "clone/.vscode/tasks.json"]) {
+      expect(tmp(path)).toBe(false);
+    }
+    expect(isWorkspaceEdit("write", { path: join(outside, "x.txt"), content: "x" }, cwd, home, [scratch])).toBe(false);
+  });
+
+  it("finds the system temp directories", () => {
+    expect(scratchRoots()).toContain(realpathSync("/tmp"));
+    expect(scratchRoots()).toContain(realpathSync(tmpdir()));
   });
 
   it("drives needsClassification", () => {
@@ -103,7 +123,7 @@ describe("heredoc writes", () => {
   it("treats an in-project heredoc like a write", () => {
     expect(fast("cat >> crates/x.rs <<'EOF'\nfn a() {}\nEOF")).toBe(true);
     expect(fast(`cd ${repo} && cat > src/new.ts <<'EOF'\nexport const a = 1;\nEOF`)).toBe(true);
-    expect(fast("cat >> ../../outside/x <<'EOF'\nx\nEOF")).toBe(false);
+    expect(fast("cat >> /etc/tool-gate-x <<'EOF'\nx\nEOF")).toBe(false);
     expect(fast("cat > ../.envrc <<'EOF'\nx\nEOF")).toBe(false);
     expect(fast(`cd ${repo} && cat > .git/hooks/pre-commit <<'EOF'\nx\nEOF`)).toBe(false);
     expect(fast("cat > /etc/x <<'EOF'\nx\nEOF")).toBe(false);

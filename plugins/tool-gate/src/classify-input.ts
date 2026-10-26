@@ -24,8 +24,11 @@ const READ_ONLY_TOOLS = new Set(["read", "grep", "glob", "ls", "find", "search",
 export const READ_ONLY_COMMANDS = new Set([
   "ls", "cat", "head", "tail", "wc", "stat", "file", "du", "df",
   "pwd", "whoami", "date", "which", "type", "echo", "printf", "rg", "grep", "git",
-  "jq", "tr", "cut", "diff", "comm", "realpath", "basename", "dirname", "find", "sed",
+  "jq", "tr", "cut", "diff", "comm", "realpath", "basename", "dirname", "find", "sed", "gh",
 ]);
+
+/** `gh pr` subcommands that only read. `--web` opens a browser and stays out. */
+const GH_PR_READ_COMMANDS = new Set(["view", "checks", "diff"]);
 
 /** `find` options and primaries that only select or print. Anything else
  * (`-exec`, `-ok`, `-delete`, `-fprint`, BSD `-f`, unknown primaries) is out. */
@@ -62,6 +65,11 @@ function isRoutineGitWrite(subcommand: string, args: string[]): boolean {
   if (subcommand === "add") {
     const separator = args.indexOf("--");
     return args.every((arg, index) => (separator !== -1 && index > separator) || !arg.startsWith("-") || GIT_ADD_OPTIONS.has(arg));
+  }
+  // A new local branch: `git switch -c NAME [START]` or `git checkout -b NAME [START]`.
+  // `-C`/`-B` reset an existing branch and `--force` discards changes; those stay out.
+  if ((subcommand === "switch" && (args[0] === "-c" || args[0] === "--create")) || (subcommand === "checkout" && args[0] === "-b")) {
+    return (args.length === 2 || args.length === 3) && args.slice(1).every(arg => !arg.startsWith("-"));
   }
   if (subcommand !== "commit") return false;
   for (let index = 0; index < args.length; index++) {
@@ -147,6 +155,14 @@ export function parseSegments(command: string): string[][] | null {
       const length = char === "$" ? home(index) : 0;
       if (char === '"') quote = "";
       else if (length > 0) { word += "~"; index += length - 1; }
+      else if (char === "\\") {
+        // Inside double quotes a backslash escapes only `\` and `"` here (`$`,
+        // backtick and newline stay rejected); before anything else it is a
+        // literal backslash, as in `grep "a\|b"`. brush and zsh agree.
+        if (next === "\\" || next === '"') { word += next; index += 1; }
+        else if (next === undefined || next === "$" || next === "`" || next === "\n") return null;
+        else word += char;
+      }
       else if (DOUBLE_QUOTE_SPECIAL.test(char)) return null;
       else word += char;
       continue;
@@ -251,6 +267,9 @@ export function isReadOnlySegment(segment: string[]): boolean {
   if (program === "git") {
     return GIT_READ_COMMANDS.has(second ?? "") || isRoutineGitWrite(second ?? "", words.slice(2));
   }
+  if (program === "gh") {
+    return second === "pr" && GH_PR_READ_COMMANDS.has(words[2] ?? "") && !words.some(arg => arg === "--web" || /^-[A-Za-z]*w/.test(arg));
+  }
   // These programs accept expressions or system-changing options; only their
   // narrow, familiar read forms belong in the fast path.
   if (program === "date") return words.length === 1;
@@ -270,7 +289,7 @@ export function isReadOnlySegment(segment: string[]): boolean {
 }
 
 /** Repository config that makes `git status`/`diff`/`log` run a program. */
-const GIT_EXECUTING_CONFIG = String.raw`^(core\.fsmonitor|diff\.external|diff\..+\.(command|textconv)|filter\..+\.(clean|smudge|process)|gpg\.program|gpg\..+\.program)$`;
+const GIT_EXECUTING_CONFIG = String.raw`^(core\.fsmonitor|core\.pager|pager\..+|diff\.external|diff\..+\.(command|textconv)|filter\..+\.(clean|smudge|process)|gpg\.program|gpg\..+\.program)$`;
 
 /**
  * True when the repository at `dir` configures a program that a git read would
@@ -425,6 +444,14 @@ export function needsClassification(tool: string, input: Record<string, unknown>
   if (tool === "bash") {
     const command = input["command"];
     if (typeof command !== "string") return true;
+    // A terminal lets git and gh start a pager, which repository config can name.
+    if (input["pty"] !== undefined && input["pty"] !== false) return true;
+    const dir = input["cwd"];
+    if (dir !== undefined) {
+      // The command runs in `dir`: reads are judged there; a heredoc write is left to the classifier.
+      if (typeof dir !== "string" || dir === "" || options.cwd === undefined) return true;
+      return !isReadOnlyCommand(command, { ...options, cwd: resolveTarget(dir, options.cwd, options.home ?? homedir()) });
+    }
     if (isReadOnlyCommand(command, options)) return false;
     // A literal heredoc into an ordinary project file is an in-project write.
     const heredoc = options.cwd === undefined ? null : heredocWrite(command);

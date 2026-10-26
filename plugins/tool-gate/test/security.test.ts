@@ -58,6 +58,12 @@ describe("read-only fast-path boundary", () => {
     expect(result?.reason).toContain("too long");
     expect(calls).toBe(0);
   });
+  it("checks file rules against the bash call's own cwd", async () => {
+    let calls = 0;
+    const h = gateHarness({ config: classifierPolicy, classify: async () => { calls++; return { action: "allow" }; } });
+    expect((await h.call("bash", { command: "head config", cwd: "~/.ssh" }))?.block).toBe(true);
+    expect(calls).toBe(0);
+  });
   it("checks file rules against paths reached through cd", async () => {
     let calls = 0;
     const h = gateHarness({ config: classifierPolicy, classify: async () => { calls++; return { action: "allow" }; } });

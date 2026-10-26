@@ -1,6 +1,6 @@
 {
   "name": "tool-gate",
-  "version": "0.3.11",
+  "version": "0.3.12",
   "description": "Argument-level permission policy for omp tool calls: bash command patterns and protected paths, with a deterministic decision and an audit log.",
   "private": true,
   "omp": {

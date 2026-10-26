@@ -30,7 +30,7 @@ import type { Action, Mode } from "./types.ts";
 import type { Verdict } from "./verdict.ts";
 
 const MODES: Mode[] = ["off", "observe", "enforce"];
-const PLUGIN_VERSION = "0.3.11";
+const PLUGIN_VERSION = "0.3.12";
 const OVERSIZED_RULE = "oversized-command";
 const SHELL_STATE_RULE = "persistent-shell-change";
 
@@ -148,8 +148,10 @@ export default function toolGate(pi: ExtensionAPI, options: { classify?: Classif
     const config = loaded.config;
     const callGeneration = generation;
     const input = (event.input ?? {}) as Record<string, unknown>;
-    const resolvedPaths = extractPaths(input).map(path => canonicalTarget(resolveTarget(path, ctx.cwd, home)));
-    const call = { tool: event.toolName, input, cwd: ctx.cwd, home, resolvedPaths };
+    // bash runs in its own `cwd` when given one; rules and the classifier must see that directory.
+    const cwd = event.toolName === "bash" && typeof input["cwd"] === "string" && input["cwd"] !== "" ? resolveTarget(input["cwd"], ctx.cwd, home) : ctx.cwd;
+    const resolvedPaths = extractPaths(input).map(path => canonicalTarget(resolveTarget(path, cwd, home)));
+    const call = { tool: event.toolName, input, cwd, home, resolvedPaths };
     const command = event.toolName === "bash" && typeof input["command"] === "string" ? input["command"] : undefined;
     // Rule regexes such as `\bgit\s+push\b[^\n]*…` backtrack quadratically; a
     // command past the classifier's own limit is confirmed by a person instead.

@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { isReadOnlyCommand, needsClassification, readOnlyPaths } from "../src/classify-input.ts";
+import { isReadOnlyCommand, needsClassification, parseSegments, readOnlyPaths } from "../src/classify-input.ts";
 
 describe("isReadOnlyCommand", () => {
   it("accepts plain reads", () => {
@@ -92,7 +92,6 @@ describe("isReadOnlyCommand", () => {
       "rg foo `pwd`",
       "echo \"$USER\"",
       "echo \"`id`\"",
-      "echo \"a\\\"b\"",
       "echo \"hi!\"",
       "ls ~other/x",
       "ls =ls",
@@ -143,6 +142,26 @@ describe("isReadOnlyCommand", () => {
     }
   });
 
+  it("accepts a new local branch and read-only gh pr calls", () => {
+    for (const command of [
+      "git switch -c feat/bs-027-overview", "git switch --create feat/x origin/main", "git checkout -b feat/x", "git checkout -b feat/x main",
+      "git switch -c feat/x && git add crates/a.rs && git commit -F /tmp/msg.txt",
+      "gh pr view 84", "gh pr view 84 --json mergeable,mergeStateStatus --jq '.mergeable'", "gh pr view --comments",
+      "gh pr checks 86 --watch --interval 20 2>&1 | tail -12", "gh pr diff 12 --name-only", "gh pr view 84 -R owner/repo",
+    ]) {
+      expect({ command, readOnly: isReadOnlyCommand(command) }).toEqual({ command, readOnly: true });
+    }
+    for (const command of [
+      "git switch -C feat/x", "git checkout -B feat/x", "git switch -c feat/x --force", "git switch --discard-changes -c x",
+      "git checkout main", "git switch main", "git checkout -b", "git checkout -b x y z", "git checkout -b x -- path", "git switch -c --orphan x",
+      "gh pr view 84 --web", "gh pr view -w", "gh pr checks -cw", "gh pr checkout 84", "gh pr merge 84", "gh pr create",
+      "gh pr comment 84 -b x", "gh pr edit 84", "gh pr close 84", "gh pr review 84", "gh api repos/x/y", "gh issue view 1",
+      "gh run rerun 5", "gh", "gh pr",
+    ]) {
+      expect({ command, readOnly: isReadOnlyCommand(command) }).toEqual({ command, readOnly: false });
+    }
+  });
+
   it("accepts multi-line reads, comments, $HOME and rtk", () => {
     for (const command of [
       "ls\npwd", "cd /repo\nls -la\ngit status", "ls &&\n  pwd", "ls\n\npwd", "# list files\nls", "ls # trailing $(touch x) `id`",
@@ -157,6 +176,14 @@ describe("isReadOnlyCommand", () => {
       "echo \"$HOME$(id)\"", "ls $PWD", "rtk err touch x", "rtk proxy touch x", "rtk env", "rtk -v git status", "rtk tree -o out",
       "rtk git push", "rtk", "rtk curl https://example.test", "rtk proxy rtk proxy touch x", "rtk read -o out a",
     ]) {
+      expect({ command, readOnly: isReadOnlyCommand(command) }).toEqual({ command, readOnly: false });
+    }
+  });
+
+  it("reads backslashes inside double quotes as the shell does", () => {
+    expect(parseSegments(String.raw`grep -rn "interval\|page_size" src`)).toEqual([["grep", "-rn", String.raw`interval\|page_size`, "src"]]);
+    expect(parseSegments(String.raw`rg "\bfn\b" "a\\b" "say \"hi\"" "a\;b"`)).toEqual([["rg", String.raw`\bfn\b`, String.raw`a\b`, 'say "hi"', String.raw`a\;b`]]);
+    for (const command of [String.raw`rg "a\$(id)"`, "rg \"a\\`id`\"", "rg \"a\\\nb\"", String.raw`rg "a\!b"`, String.raw`rg "a\"`, String.raw`rg "a\\$(id)"`]) {
       expect({ command, readOnly: isReadOnlyCommand(command) }).toEqual({ command, readOnly: false });
     }
   });
@@ -268,11 +295,25 @@ describe("git configuration that runs commands", () => {
     ["filter.x.process", "./run.sh"],
     ["gpg.program", "./run.sh"],
     ["gpg.ssh.program", "./run.sh"],
+    ["core.pager", "./run.sh"],
+    ["pager.log", "./run.sh"],
   ] as [string, string][]) {
     it(`escalates git when the repository sets ${config[0]}`, () => {
       expect(isReadOnlyCommand("git status", { cwd: repo(config) })).toBe(false);
     });
   }
+
+  it("judges a bash call in the directory it runs in", () => {
+    const clean = repo();
+    const hostile = repo(["core.fsmonitor", "touch pwned"]);
+    expect(needsClassification("bash", { command: "git status" }, { cwd: clean })).toBe(false);
+    expect(needsClassification("bash", { command: "git status", cwd: hostile }, { cwd: clean })).toBe(true);
+    expect(needsClassification("bash", { command: "git status", cwd: clean }, { cwd: hostile })).toBe(false);
+    expect(needsClassification("bash", { command: "ls", cwd: 5 }, { cwd: clean })).toBe(true);
+    expect(needsClassification("bash", { command: "cat > a.ts <<'EOF'\nx\nEOF", cwd: clean }, { cwd: clean })).toBe(true);
+    expect(needsClassification("bash", { command: "git log", pty: true }, { cwd: clean })).toBe(true);
+    expect(needsClassification("bash", { command: "git log", pty: false }, { cwd: clean })).toBe(false);
+  });
 
   it("checks the repository a cd segment moves into", () => {
     const dir = repo(["core.fsmonitor", "touch pwned"]);

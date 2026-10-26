@@ -260,7 +260,7 @@ describe("classifier escalation", () => {
   it("escalates write tools too", async () => {
     const { classify } = recorder({ action: "deny", reason: "not asked" });
     const h = harness({ classify, config: enabled });
-    const decision = await runTool(h, "write", { path: "/tmp/x", content: "hi" });
+    const decision = await runTool(h, "write", { path: "/etc/x", content: "hi" });
     expect(decision?.block).toBe(true);
   });
 

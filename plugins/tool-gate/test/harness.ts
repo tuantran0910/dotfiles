@@ -4,6 +4,10 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import toolGate from "../src/index.ts";
 import type { ClassifyFn } from "../src/classifier.ts";
+import { useScratchRoots } from "../src/workspace.ts";
+
+// Harness projects live in the temp directory; keep "outside the project" outside.
+useScratchRoots([]);
 
 /** Exercises the registered extension hooks. It never executes a proposed tool. */
 export function gateHarness(options: { config?: unknown; project?: unknown; classify?: ClassifyFn } = {}) {
